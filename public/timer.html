@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Timer</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        width: 100vw;
+        height: 100vh;
+        overflow: hidden;
+        background: transparent;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      }
+
+      .timer-content {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: stretch;
+        gap: 0;
+        border-radius: 14px;
+        background:
+          linear-gradient(135deg, rgba(94, 163, 255, 0.18), rgba(94, 163, 255, 0.08)),
+          rgba(28, 37, 47, 0.94);
+        box-shadow: 0 16px 38px rgba(0, 0, 0, 0.38);
+        backdrop-filter: blur(18px) saturate(135%);
+        overflow: hidden;
+        cursor: grab;
+      }
+
+      .timer-content:active {
+        cursor: grabbing;
+      }
+
+      .timer-body {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 12px 16px;
+      }
+
+      .timer-task-info {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .timer-icon {
+        font-size: 16px;
+        line-height: 1;
+        opacity: 0.9;
+      }
+
+      .timer-title {
+        flex: 1;
+        min-width: 0;
+        color: rgba(255, 255, 255, 0.88);
+        font-size: 13px;
+        font-weight: 550;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .timer-display {
+        color: rgba(94, 163, 255, 1);
+        font-size: 28px;
+        font-weight: 700;
+        text-align: center;
+        letter-spacing: 1px;
+        font-variant-numeric: tabular-nums;
+        text-shadow: 0 2px 8px rgba(94, 163, 255, 0.3);
+      }
+
+      .timer-controls {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 8px 8px 8px 0;
+      }
+
+      .timer-pause-button,
+      .timer-stop-button {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex: 1;
+        width: 32px;
+        min-height: 32px;
+        padding: 0;
+        border: none;
+        border-radius: 9px;
+        background: rgba(255, 255, 255, 0.07);
+        color: rgba(255, 255, 255, 0.7);
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+
+      .timer-pause-button:hover {
+        background: rgba(94, 163, 255, 0.2);
+        color: rgba(255, 255, 255, 0.95);
+      }
+
+      .timer-pause-button:active {
+        background: rgba(94, 163, 255, 0.3);
+      }
+
+      .timer-stop-button:hover {
+        background: rgba(255, 110, 110, 0.2);
+        color: rgba(255, 255, 255, 0.95);
+      }
+
+      .timer-stop-button:active {
+        background: rgba(255, 110, 110, 0.3);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="timer-content" data-tauri-drag-region>
+      <div class="timer-body">
+        <div class="timer-task-info">
+          <span class="timer-icon" id="timer-icon">⏱</span>
+          <span class="timer-title" id="timer-title">任务名称</span>
+        </div>
+        <div class="timer-display" id="timer-display">0秒</div>
+      </div>
+      <div class="timer-controls">
+        <button class="timer-pause-button" id="pause-btn" title="暂停">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="6" y="4" width="4" height="16"></rect>
+            <rect x="14" y="4" width="4" height="16"></rect>
+          </svg>
+        </button>
+        <button class="timer-stop-button" id="stop-btn" title="停止">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <script>
+      const timerIcon = document.getElementById('timer-icon');
+      const timerTitle = document.getElementById('timer-title');
+      const timerDisplay = document.getElementById('timer-display');
+      const pauseBtn = document.getElementById('pause-btn');
+      const stopBtn = document.getElementById('stop-btn');
+      const tauriApi = window.__TAURI__;
+      const currentWindow = tauriApi?.window?.getCurrentWindow?.();
+      const listen = tauriApi?.event?.listen;
+      const emitTo = tauriApi?.event?.emitTo;
+
+      let isPaused = false;
+
+      console.log('Timer window script loaded');
+
+      if (!currentWindow || !listen || !emitTo) {
+        timerTitle.textContent = '计时器初始化失败';
+        timerDisplay.textContent = '请从桌面小组件启动';
+        throw new Error('Tauri global API is unavailable in timer window.');
+      }
+
+      document.querySelectorAll('[data-tauri-drag-region]').forEach((element) => {
+        element.addEventListener('mousedown', (event) => {
+          if (event.button !== 0 || event.target.closest('button')) return;
+          currentWindow.startDragging().catch(() => undefined);
+        });
+      });
+
+      listen('timer-update', (event) => {
+        console.log('Received timer-update:', event.payload);
+        const { title, elapsed, paused } = event.payload;
+        timerTitle.textContent = title;
+        timerDisplay.textContent = formatTime(elapsed);
+        isPaused = paused;
+        timerIcon.textContent = paused ? '⏸' : '⏱';
+
+        if (paused) {
+          pauseBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="5 3 19 12 5 21 5 3"></polygon>
+          </svg>`;
+          pauseBtn.title = '继续';
+        } else {
+          pauseBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="6" y="4" width="4" height="16"></rect>
+            <rect x="14" y="4" width="4" height="16"></rect>
+          </svg>`;
+          pauseBtn.title = '暂停';
+        }
+      }).then(() => {
+        console.log('Timer update listener registered');
+        emitTo('main', 'timer-ready');
+      }).catch((error) => {
+        console.error('Timer update listener failed:', error);
+      });
+
+      pauseBtn.addEventListener('click', () => {
+        console.log('Pause button clicked');
+        emitTo('main', 'timer-pause-toggle').catch((error) => console.error('Pause emit failed:', error));
+      });
+
+      stopBtn.addEventListener('click', () => {
+        console.log('Stop button clicked');
+        emitTo('main', 'timer-stop').catch((error) => console.error('Stop emit failed:', error));
+      });
+
+      function formatTime(seconds) {
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = seconds % 60;
+
+        if (h > 0) {
+          return `${h}小时${m}分钟`;
+        } else if (m > 0) {
+          return `${m}分钟${s}秒`;
+        } else {
+          return `${s}秒`;
+        }
+      }
+    </script>
+  </body>
+</html>
