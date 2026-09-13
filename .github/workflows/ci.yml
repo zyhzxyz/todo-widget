@@ -13,16 +13,18 @@ jobs:
         with:
           node-version: '24'
           cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - run: npm ci
+      - run: npm run check:tauri-versions
+      - run: npm run test:tools
       - run: npm test
       - run: npm run test:server
       - run: npm run typecheck
       - run: npm run typecheck:server
       - run: npm run typecheck:tests
       - run: npm run build
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
       - run: npm run test:plugin
       - run: npm run package:plugin
       - uses: actions/upload-artifact@v4

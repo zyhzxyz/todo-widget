@@ -1,5 +1,11 @@
 # 变更记录
 
+## 2026-09-13 — Windows 构建依赖对齐
+
+- GitHub 首轮功能分支 CI 发现通知插件 Rust `2.4.0` 与 npm `2.3.3` 不匹配；将 npm 通知插件对齐到 `2.4.0`，不跳过 Tauri 的版本检查。
+- 增加 `npm run check:tauri-versions`，直接检查两份锁文件中的 Tauri API/插件 major.minor，提前发现跨语言依赖漂移；附带工具回归测试。
+- 首轮功能分支的前端/API/插件测试与 Node、Docker/Chromium 端到端已通过；修复后的 Windows 构建结果继续以对应 GitHub Actions 为准，不能当作 Windows 真机运行验收。
+
 ## 2026-09-13 — 部署与隔离端到端验证
 
 - 增加 Node24 多阶段 Docker 镜像与独立 Compose 服务：Linux host 网络/loopback，非 root UID1000，只读根文件系统，业务数据库使用私有独立卷。

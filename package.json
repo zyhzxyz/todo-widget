@@ -23,14 +23,16 @@
     "test:plugin": "python3 -m unittest discover -s tests/plugin -v",
     "package:plugin": "python3 tools/package_astrbot.py",
     "test:e2e": "python3 tools/e2e.py",
-    "test:e2e:browser": "python3 tools/e2e.py --browser"
+    "test:e2e:browser": "python3 tools/e2e.py --browser",
+    "check:tauri-versions": "python3 tools/check_tauri_versions.py",
+    "test:tools": "python3 -m unittest discover -s tests/tools -v"
   },
   "dependencies": {
     "@js-temporal/polyfill": "^0.5.1",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.7.3",
     "@tauri-apps/plugin-fs": "^2.5.2",
-    "@tauri-apps/plugin-notification": "^2.3.3",
+    "@tauri-apps/plugin-notification": "^2.4.0",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
