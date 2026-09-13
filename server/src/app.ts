@@ -31,7 +31,7 @@ function botTask(todo: Todo) {
   return task;
 }
 function botView(state: Snapshot, now: number) {
-  return { revision: state.revision, timeZone: state.timeZone, serverTime: new Date(now).toISOString(), today: dateInZone(now, state.timeZone), lists: state.lists, tasks: state.todos.map(botTask) };
+  return { revision: state.revision, timeZone: state.timeZone, serverTime: new Date(now).toISOString(), today: dateInZone(now, state.timeZone), lists: state.lists, tasks: state.todos.filter(todo => !todo.deletedAt).map(botTask) };
 }
 
 export async function buildApp(config: ServerConfig, options: { store?: Store; logger?: boolean } = {}) {
@@ -107,7 +107,7 @@ export async function buildApp(config: ServerConfig, options: { store?: Store; l
       } else {
         taskId = body.taskId;
         const todo = business.todos.find(t => t.id === taskId);
-        if (!todo) throw new ApiError(404, 'TASK_NOT_FOUND', 'Task ID does not exist; do not guess an ID');
+        if (!todo || todo.deletedAt) throw new ApiError(404, 'TASK_NOT_FOUND', 'Task ID does not exist; do not guess an ID');
         if (todo.isGroup) throw new ApiError(422, 'GROUP_NOT_SUPPORTED', 'Modify group tasks from the desktop');
         if (body.action === 'complete') {
           const date = body.date ?? dateInZone(store.now(), store.timeZone);
@@ -131,7 +131,7 @@ export async function buildApp(config: ServerConfig, options: { store?: Store; l
       return { business: businessSchema.parse(business), result: { taskId } };
     });
     const todo = changed.snapshot.todos.find(t => t.id === changed.result.taskId);
-    return { ok: true, revision: changed.snapshot.revision, committedRevision: changed.committedRevision, replayed: changed.replayed, timeZone: store.timeZone, taskId: changed.result.taskId, task: todo ? botTask(todo) : null };
+    return { ok: true, revision: changed.snapshot.revision, committedRevision: changed.committedRevision, replayed: changed.replayed, timeZone: store.timeZone, taskId: changed.result.taskId, task: todo && !todo.deletedAt ? botTask(todo) : null };
   });
   const bindingSchema = z.object({ senderId: z.string().regex(/^\d{5,20}$/), platformId: z.string().min(1).max(128), session: z.string().min(1).max(512) }).strict();
   app.get('/api/v1/bot/binding', async () => ({ binding: store.getBinding() }));

@@ -145,7 +145,7 @@ export class Store {
     const today = dateInZone(now, this.timeZone);
     const wanted = new Set<string>();
     for (const todo of this.snapshot().todos) {
-      if (todo.isGroup) continue;
+      if (todo.isGroup || todo.deletedAt) continue;
       const goal = !!todo.goalStartDate;
       let at: string | undefined;
       let day: string | undefined;

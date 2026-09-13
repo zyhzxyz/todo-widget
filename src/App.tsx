@@ -1,9 +1,7 @@
 import {
-  Archive,
   BarChart3,
   BookOpen,
   Check,
-  CheckCheck,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -14,6 +12,9 @@ import {
   Minus,
   Pin,
   PinOff,
+  Pause,
+  Play,
+  RotateCcw,
   Search,
   Settings,
   Trash2,
@@ -35,7 +36,9 @@ import {
 import { currentMonitor, LogicalPosition } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
+import { tintPresets } from "./lib/theme";
+import { deletionIds, restoreTodo, trashTodo, undoCompletion } from "../shared/recycle";
 import { calendarDates, localDate, shiftCalendarMonth } from "./lib/dates";
 import { businessDate, businessDateTime, setBusinessTimeZone } from "./lib/businessClock";
 import { wallToInstant } from "../shared/time";
@@ -115,6 +118,7 @@ const text = {
   today: "\u4eca\u5929",
   important: "\u91cd\u8981",
   completed: "\u5b8c\u6210",
+  recycle: "回收站",
   newList: "\u65b0\u6e05\u5355",
   addList: "\u65b0\u589e\u7a97\u53e3",
   renameList: "\u91cd\u547d\u540d\u7a97\u53e3",
@@ -225,14 +229,6 @@ const DEFAULT_TODAY_ID = "list-today";
 const DEFAULT_IMPORTANT_ID = "list-important";
 const DEFAULT_LIST_IDS = new Set([DEFAULT_INBOX_ID, DEFAULT_TODAY_ID, DEFAULT_IMPORTANT_ID]);
 const COMPLETE_ANIMATION_MS = 980;
-
-const tintPresets = [
-  { id: "blue", label: "\u84dd", rgb: "44, 62, 80", accent: "94, 163, 255" },
-  { id: "teal", label: "\u9752", rgb: "28, 73, 76", accent: "45, 212, 191" },
-  { id: "green", label: "\u7eff", rgb: "34, 68, 50", accent: "74, 222, 128" },
-  { id: "purple", label: "\u7d2b", rgb: "58, 47, 80", accent: "168, 139, 250" },
-  { id: "gray", label: "\u7070", rgb: "46, 52, 58", accent: "180, 190, 200" },
-];
 
 const priorityRank: Record<Priority, number> = {
   high: 0,
@@ -417,6 +413,8 @@ function normalizeTodos() {
         collapsed: Boolean(todo.collapsed),
         createdAt: todo.createdAt || now,
         updatedAt: todo.updatedAt || now,
+        deletedAt: todo.deletedAt,
+        deletionBatchId: todo.deletionBatchId,
         timeEntries: todo.timeEntries || [],
         totalTimeSpent: todo.totalTimeSpent || 0,
       };
@@ -469,6 +467,7 @@ function isGoalActiveToday(todo: Todo) {
 }
 
 function isOpenToday(todo: Todo) {
+  if (todo.deletedAt) return false;
   if (isGoal(todo)) {
     return isGoalActiveToday(todo) && !todo.completionDates.includes(today());
   }
@@ -477,6 +476,7 @@ function isOpenToday(todo: Todo) {
 }
 
 function shouldShowTodo(todo: Todo) {
+  if (todo.deletedAt) return false;
   const currentDate = today();
   if (todo.notifyAt && todo.notifyAt > dateTimeLocal()) return false;
   if (todo.notifyDate && todo.notifyDate > currentDate) return false;
@@ -529,11 +529,12 @@ function getOpenChildTodos(groupId: string, todos: Todo[], completingIds: Set<st
 }
 
 function shouldStayOpen(todo: Todo, todos: Todo[], completingIds: Set<string>) {
+  if (todo.deletedAt) return false;
   if (!todo.isGroup) {
     return shouldShowTodo(todo) && isOpenOrCompleting(todo, completingIds);
   }
 
-  const children = todos.filter((item) => item.parentId === todo.id);
+  const children = todos.filter((item) => item.parentId === todo.id && !item.deletedAt);
   if (children.length === 0) {
     return shouldShowTodo(todo) && isOpenOrCompleting(todo, completingIds);
   }
@@ -571,9 +572,16 @@ function App() {
   const [creationMode, setCreationMode] = useState<CreationMode | null>(null);
   const [creationMenu, setCreationMenu] = useState<CreationMenu>(null);
   const [query, setQuery] = useState("");
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [calendarOpen, setCalendarOpen] = useState(false);
+  const [activePanel, setActivePanel] = useState<"search" | "settings" | "calendar" | "diary" | null>(null);
+  const searchOpen = activePanel === "search";
+  const settingsOpen = activePanel === "settings";
+  const calendarOpen = activePanel === "calendar";
+  const diaryOpen = activePanel === "diary";
+  const [recycleTab, setRecycleTab] = useState<"completed" | "deleted">("completed");
+  const [undoDates, setUndoDates] = useState<Record<string, string>>({});
+  const [notice, setNotice] = useState<{ message: string; action?: { kind: "completion" | "deletion"; id: string; date?: string } } | null>(null);
+  const [timerBridgeError, setTimerBridgeError] = useState("");
+  const diaryDraftsRef = useRef(new Map<string, string>());
   const [renamingListId, setRenamingListId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [completingIds, setCompletingIds] = useState<string[]>([]);
@@ -597,7 +605,6 @@ function App() {
   const [creationNotes, setCreationNotes] = useState("");
   const [completingTodoId, setCompletingTodoId] = useState<string | null>(null);
   const [completionNotesDraft, setCompletionNotesDraft] = useState("");
-  const [diaryOpen, setDiaryOpen] = useState(false);
   const [diaryDate, setDiaryDate] = useState<string | null>(null);
   const [editingDiaryId, setEditingDiaryId] = useState<string | null>(null);
   const [diaryNotesDraft, setDiaryNotesDraft] = useState("");
@@ -641,6 +648,8 @@ function App() {
   const completedCount = completedEvents.length;
   const activeIsInbox = settings.activeListId === DEFAULT_INBOX_ID;
   const tint = tintPresets.find((preset) => preset.id === settings.tint) || tintPresets[0];
+  const tintRef = useRef(tint);
+  tintRef.current = tint;
 
   useEffect(() => {
     localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
@@ -702,52 +711,60 @@ function App() {
 
   useEffect(() => {
     if (!appWindow.native) return;
-    let unlistenPause: (() => void) | undefined;
-    let unlistenStop: (() => void) | undefined;
-    let unlistenReady: (() => void) | undefined;
     let disposed = false;
-
-    listen("timer-pause-toggle", () => {
-      if (timerPausedRef.current && dataStore.canWrite) {
-        resumeTimer();
-      } else {
-        pauseTimer();
-      }
-    }).then((unlisten) => {
-      if (disposed) {
-        unlisten();
-      } else {
-        unlistenPause = unlisten;
-      }
-    });
-
-    listen("timer-stop", () => {
-      stopTimer();
-    }).then((unlisten) => {
-      if (disposed) {
-        unlisten();
-      } else {
-        unlistenStop = unlisten;
-      }
-    });
-
-    listen("timer-ready", () => {
-      emitTimerUpdate();
-    }).then((unlisten) => {
-      if (disposed) {
-        unlisten();
-      } else {
-        unlistenReady = unlisten;
-      }
-    });
-
-    return () => {
-      disposed = true;
-      unlistenPause?.();
-      unlistenStop?.();
-      unlistenReady?.();
+    const unlisteners: Array<() => void> = [];
+    type Request = { sessionId: string; requestId?: string; paused?: boolean };
+    const target = { kind: "WebviewWindow", label: "main" } as const;
+    const register = (name: string, handle: (payload: Request) => void) => {
+      listen<Request>(name, event => handle(event.payload), { target }).then(unlisten => {
+        if (disposed) unlisten(); else unlisteners.push(unlisten);
+      }).catch(() => {
+        if (!disposed) setTimerBridgeError("计时浮窗连接失败，请使用下方计时按钮。");
+      });
     };
+    register("timer-set-paused", request => {
+      if (request?.sessionId !== timerEntryIdRef.current || typeof request.paused !== "boolean") return;
+      if (request.paused) pauseTimer(); else resumeTimer();
+      emitTimerUpdate(undefined, undefined, undefined, { requestId: request.requestId });
+    });
+    register("timer-stop", request => {
+      if (request?.sessionId !== timerEntryIdRef.current) return;
+      stopTimer();
+      if (timingTodoIdRef.current) emitTimerUpdate(undefined, undefined, undefined, {
+        requestId: request.requestId, error: "计时尚未保存，请使用主窗口处理恢复记录。",
+      });
+    });
+    register("timer-ready", () => { setTimerBridgeError(""); emitTimerUpdate(); });
+    return () => { disposed = true; unlisteners.forEach(unlisten => unlisten()); };
   }, []);
+
+  // Theme changes and read-only transitions also reach a paused native timer.
+  useEffect(() => { emitTimerUpdate(); }, [tint, dataView.status, todos]);
+
+  useEffect(() => {
+    if (!timingTodoId) return;
+    const task = todos.find(todo => todo.id === timingTodoId);
+    if (!task || task.deletedAt) {
+      pauseTimer();
+      setTimerBridgeError("此任务已在其他端删除，计时已暂停；停止后保留计时记录。");
+    }
+  }, [todos, timingTodoId]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timeout = window.setTimeout(() => setNotice(null), 12_000);
+    return () => window.clearTimeout(timeout);
+  }, [notice]);
+
+  useEffect(() => {
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setListMenu(null); setTodoMenu(null); setCreationMenu(null);
+      if (!creationMode && !completingTodoId && !editingTaskId && !editingNotesId) changePanel(null);
+    };
+    window.addEventListener("keydown", escape);
+    return () => window.removeEventListener("keydown", escape);
+  }, [activePanel, diaryDate, standaloneDiaryDraft, editingDiaryId, diaryNotesDraft, creationMode, completingTodoId, editingTaskId, editingNotesId]);
 
   // 计时器更新
   useEffect(() => {
@@ -815,10 +832,15 @@ function App() {
   const completedTodos = useMemo(() => {
     const lowerQuery = query.trim().toLowerCase();
     return todos
-      .filter((todo) => todo.completed || todo.completionDates.length > 0)
+      .filter((todo) => !todo.deletedAt && (isGoal(todo) ? todo.completionDates.length > 0 : todo.completed))
       .filter((todo) => !lowerQuery || todo.title.toLowerCase().includes(lowerQuery))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }, [query, todos]);
+
+  const deletedTodos = useMemo(() => todos
+    .filter(todo => todo.deletedAt && (!query.trim() || todo.title.toLowerCase().includes(query.trim().toLowerCase())))
+    .sort((a, b) => b.deletedAt!.localeCompare(a.deletedAt!)), [query, todos]);
+  const recycleTodos = recycleTab === "deleted" ? deletedTodos : completedTodos;
 
   const heatmapDays = useMemo(() => getHeatmapDays(completedEvents, calendarMonth), [completedEvents, calendarMonth]);
   const latestEvents = completedEvents.slice(0, 5);
@@ -829,13 +851,27 @@ function App() {
 
   const diaryEntries = useMemo(() => {
     if (!diaryDate) return { completedTodos: [], standaloneDiary: undefined };
-    const completedTodos = todos.filter((todo) => todo.completionDates.includes(diaryDate));
+    const completedTodos = todos.filter((todo) => !todo.deletedAt && todo.completionDates.includes(diaryDate));
     const standaloneDiary = standaloneDiaryEntries.find((entry) => entry.date === diaryDate);
     return { completedTodos, standaloneDiary };
   }, [diaryDate, todos, standaloneDiaryEntries]);
 
   function updateSettings(patch: Partial<WidgetSettings>) {
     setSettings((current) => ({ ...current, ...patch }));
+  }
+
+  function changePanel(panel: typeof activePanel, toggle = false) {
+    const next = toggle && activePanel === panel ? null : panel;
+    if (diaryOpen && next !== "diary") { saveStandaloneDiary(); commitDiaryEdit(); }
+    setActivePanel(next);
+    if (next !== "search") setQuery("");
+    setListMenu(null); setTodoMenu(null); setCreationMenu(null);
+    updateSettings({ collapsed: false });
+  }
+
+  function toggleRecycle() {
+    changePanel(null);
+    updateSettings({ showCompleted: !settings.showCompleted, collapsed: false });
   }
 
   function scrollListsToEnd() {
@@ -876,8 +912,7 @@ function App() {
     resetCreationForm(mode);
     setCreationMode(mode);
     setCreationMenu(null);
-    setSearchOpen(false);
-    setQuery("");
+    changePanel(null);
     updateSettings({ showCompleted: false, collapsed: false });
   }
 
@@ -1059,35 +1094,14 @@ function App() {
     if (completingIds.includes(id)) return;
 
     const todo = todos.find((item) => item.id === id);
-    if (!todo) return;
+    if (!todo || todo.deletedAt) return;
 
     if (todo.isGroup && getOpenChildTodos(todo.id, todos, completingIdSet).length > 0) {
       return;
     }
 
-    if (todo.completed && !isGoal(todo)) {
-      setTodos((current) =>
-        current.map((item) =>
-          item.id === id
-            ? { ...item, completed: false, updatedAt: new Date().toISOString() }
-            : item,
-        ),
-      );
-      return;
-    }
-
-    if (isGoal(todo) && todo.completionDates.includes(today())) {
-      setTodos((current) =>
-        current.map((item) =>
-          item.id === id
-            ? {
-                ...item,
-                completionDates: item.completionDates.filter((date) => date !== today()),
-                updatedAt: new Date().toISOString(),
-              }
-            : item,
-        ),
-      );
+    if ((todo.completed && !isGoal(todo)) || (isGoal(todo) && todo.completionDates.includes(today()))) {
+      undoTodoCompletion(id, today());
       return;
     }
 
@@ -1100,6 +1114,7 @@ function App() {
     if (!dataStore.canWrite) return;
     if (!completingTodoId) return;
     const id = completingTodoId;
+    if (!todos.some(todo => todo.id === id && !todo.deletedAt)) { setCompletingTodoId(null); return; }
     const completionNotes = completionNotesDraft.trim() || undefined;
     const finalTimeSpent = editingTimeSpent !== null ? editingTimeSpent : undefined;
     const timerSession = timingTodoIdRef.current === id ? finishTimerSession() : null;
@@ -1152,21 +1167,39 @@ function App() {
           : item,
       );
     });
+    setNotice({ message: "已完成；可在回收站的“已完成”中撤销。", action: { kind: "completion", id, date: today() } });
     window.setTimeout(() => {
       setCompletingIds((current) => current.filter((itemId) => itemId !== id));
     }, COMPLETE_ANIMATION_MS);
   }
 
+  function undoTodoCompletion(id: string, date: string) {
+    if (!dataStore.canWrite) return;
+    const todo = todos.find(item => item.id === id && !item.deletedAt);
+    if (!todo) return;
+    const changed = setTodos(current => undoCompletion(current, id, date, new Date().toISOString()));
+    if (!changed) return;
+    setCompletingIds(current => current.filter(item => item !== id));
+    setNotice({ message: isGoal(todo) ? `已撤销 ${date} 的打卡，其他日期和计时保留。` : "已撤销完成，任务回到原清单；历史说明和计时保留。" });
+  }
+
   function removeTodo(id: string) {
     if (!dataStore.canWrite) return;
-    if (timingTodoIdRef.current === id) { alert("请先停止计时，再删除任务。"); return; }
-    setTodos((current) =>
-      current
-        .filter((todo) => todo.id !== id)
-        .map((todo) =>
-          todo.parentId === id ? { ...todo, parentId: undefined, updatedAt: new Date().toISOString() } : todo,
-        ),
-    );
+    const ids = deletionIds(todos, id);
+    if (!ids.size) return;
+    if (timingTodoIdRef.current && ids.has(timingTodoIdRef.current)) {
+      alert("请先停止该任务或子任务的计时，再移入回收站。"); return;
+    }
+    if (setTodos(current => trashTodo(current, id, new Date().toISOString(), crypto.randomUUID()))) {
+      setNotice({ message: ids.size > 1 ? `已将任务集和 ${ids.size - 1} 个子任务移入回收站。` : "已移入回收站，记录没有被彻底删除。", action: { kind: "deletion", id } });
+    }
+  }
+
+  function restoreDeletedTodo(id: string) {
+    if (!dataStore.canWrite) return;
+    if (setTodos(current => restoreTodo(current, id, new Date().toISOString()))) {
+      setNotice({ message: "已恢复（完成状态保留）；提醒需重新设置。" });
+    }
   }
 
   function toggleGroupCollapse(id: string) {
@@ -1179,7 +1212,7 @@ function App() {
   }
 
   function openQuickAddFromBlank(event: MouseEvent<HTMLElement>) {
-    if (!dataStore.canWrite) return;
+    if (!dataStore.canWrite || settings.showCompleted || (activePanel && activePanel !== "search")) return;
     // 待办窗口不能创建任务
     if (activeIsInbox) {
       return;
@@ -1214,7 +1247,7 @@ function App() {
 
   function allowGroupDrop(event: DragEvent<HTMLElement>, groupId: string) {
     const group = todos.find((todo) => todo.id === groupId);
-    if (!group?.isGroup) return;
+    if (!group?.isGroup || group.deletedAt) return;
 
     // 必须调用 preventDefault 才能允许 drop
     event.preventDefault();
@@ -1239,13 +1272,13 @@ function App() {
     console.log("Drop attempt:", { draggedId, groupId, group: group?.title, dragged: dragged?.title });
 
     // 检查：任务集必须存在
-    if (!group?.isGroup) {
+    if (!group?.isGroup || group.deletedAt) {
       console.log("Target is not a group");
       return;
     }
 
     // 检查：被拖拽的任务必须存在
-    if (!dragged) {
+    if (!dragged || dragged.deletedAt) {
       console.log("Dragged task not found");
       return;
     }
@@ -1435,20 +1468,23 @@ function App() {
     setSelectedDate(null);
   }
 
-  function openDiary(date: string) {
+  function openDiary(date: string, toggle = false) {
+    if (toggle && diaryOpen && diaryDate === date) { changePanel(null); return; }
+    if (diaryOpen) { saveStandaloneDiary(); commitDiaryEdit(); }
     setDiaryDate(date);
-    setDiaryOpen(true);
-    setCalendarOpen(false);
-    setSettingsOpen(false);
-    const existingEntry = standaloneDiaryEntries.find((entry) => entry.date === date);
-    setStandaloneDiaryDraft(existingEntry?.content || "");
+    changePanel("diary");
+    const existingEntry = dataStore.getSnapshot().data.diary.find(entry => entry.date === date);
+    setStandaloneDiaryDraft(diaryDraftsRef.current.get(date) ?? existingEntry?.content ?? "");
   }
 
   function saveStandaloneDiary() {
     if (!dataStore.canWrite) return;
     if (!diaryDate) return;
     const content = standaloneDiaryDraft.trim();
-
+    if ((dataStore.getSnapshot().data.diary.find(entry => entry.date === diaryDate)?.content ?? "") === content) {
+      diaryDraftsRef.current.delete(diaryDate); return;
+    }
+    diaryDraftsRef.current.delete(diaryDate);
     setStandaloneDiaryEntries((current) => {
       const existingIndex = current.findIndex((entry) => entry.date === diaryDate);
       const now = new Date().toISOString();
@@ -1486,8 +1522,11 @@ function App() {
 
   function startEditDiary(todoId: string) {
     if (!dataStore.canWrite) return;
-    const todo = todos.find((item) => item.id === todoId);
-    if (!todo) return;
+    const todo = todos.find((item) => item.id === todoId && !item.deletedAt);
+    if (!todo || editingDiaryId === todoId) return;
+    // A previous draft may have survived an offline panel switch without blur.
+    // Commit it before selecting another task rather than silently replacing it.
+    if (editingDiaryId) commitDiaryEdit();
     setEditingDiaryId(todoId);
     setDiaryNotesDraft(todo.completionNotes || "");
   }
@@ -1530,6 +1569,7 @@ function App() {
       "a",
       "[contenteditable='true']",
       ".todo-row",
+      ".archive-card",
       ".list-tabs",
       ".rename-form",
       ".search-row",
@@ -1561,22 +1601,24 @@ function App() {
     todoId = timingTodoIdRef.current,
     elapsed = timerElapsedRef.current,
     paused = timerPausedRef.current,
+    reply: { requestId?: string; error?: string } = {},
   ) {
     if (!todoId || !timerWindowRef.current) return;
 
     const todo = todosRef.current.find((item) => item.id === todoId);
-    timerWindowRef.current
-      .emit("timer-update", {
-        title: todo?.title || "",
-        elapsed,
-        paused,
-      })
-      .catch(() => undefined);
+    emitTo("timer", "timer-update", {
+      sessionId: timerEntryIdRef.current,
+      title: todo?.title || "任务已删除",
+      elapsed, paused,
+      canResume: dataStore.canWrite && !!todo && !todo.deletedAt,
+      theme: { rgb: tintRef.current.rgb, accent: tintRef.current.accent },
+      ...reply,
+    }).catch(() => setTimerBridgeError("计时浮窗更新失败，请使用下方计时按钮。"));
   }
 
   async function startTimer(todoId: string) {
     if (!dataStore.canWrite) return;
-    if (!todosRef.current.some((todo) => todo.id === todoId)) return;
+    if (!todosRef.current.some((todo) => todo.id === todoId && !todo.deletedAt)) return;
     if (timingTodoIdRef.current === todoId) return;
     // Commit the previous session before replacing its refs or native window.
     stopTimer();
@@ -1592,6 +1634,7 @@ function App() {
     timerPausedRef.current = false;
     timerAccumulatedTimeRef.current = 0;
 
+    setTimerBridgeError("");
     setTimingTodoId(todoId);
     setTimerStartTime(startedAt);
     setTimerElapsed(0);
@@ -1623,7 +1666,6 @@ function App() {
           : Math.max(20, window.screen.availWidth - timerWidth - 20);
       const y = workAreaPosition ? Math.round(workAreaPosition.y / scaleFactor + 20) : 20;
 
-      console.log("Creating timer window at:", { x, y, scaleFactor });
 
       const timerUrl = "/timer.html";
 
@@ -1642,12 +1684,10 @@ function App() {
         visible: false,
       });
 
-      console.log("Timer window instance created");
       timerWindowRef.current = timerWindow;
 
       timerWindow.once("tauri://created", () => {
         if (generation !== timerWindowGenerationRef.current) return;
-        console.log("Timer window created successfully");
         timerWindow
           .setPosition(new LogicalPosition(x, y))
           .then(() => timerWindow.show())
@@ -1685,7 +1725,7 @@ function App() {
   }
 
   function resumeTimer() {
-    if (timerPausedRef.current && dataStore.canWrite) {
+    if (timerPausedRef.current && dataStore.canWrite && todosRef.current.some(todo => todo.id === timingTodoIdRef.current && !todo.deletedAt)) {
       const resumedAt = Date.now();
 
       timerPausedRef.current = false;
@@ -1810,19 +1850,14 @@ function App() {
         >
           <GripHorizontal size={16} />
           <ListChecks size={16} />
-          <span>{settings.showCompleted ? text.completed : activeList?.name || text.title}</span>
+          <span>{settings.showCompleted ? text.recycle : activeList?.name || text.title}</span>
         </button>
 
         <div className="window-actions">
           <button
             aria-label={text.searchTasks}
             className={searchOpen ? "icon-button active" : "icon-button subtle"}
-            onClick={() => {
-              setSearchOpen((current) => {
-                if (current) setQuery("");
-                return !current;
-              });
-            }}
+            onClick={() => changePanel("search", true)}
             title={text.searchTasks}
             type="button"
           >
@@ -1831,10 +1866,7 @@ function App() {
           <button
             aria-label={text.calendar}
             className={calendarOpen ? "icon-button active" : "icon-button subtle"}
-            onClick={() => {
-              setCalendarOpen(true);
-              setDiaryOpen(false);
-            }}
+            onClick={() => changePanel("calendar", true)}
             title={text.calendar}
             type="button"
           >
@@ -1843,23 +1875,20 @@ function App() {
           <button
             aria-label={text.todayDiary}
             className={diaryOpen && diaryDate === today() ? "icon-button active" : "icon-button subtle"}
-            onClick={() => {
-              openDiary(today());
-              setCalendarOpen(false);
-            }}
+            onClick={() => openDiary(today(), true)}
             title={text.todayDiary}
             type="button"
           >
             <BookOpen size={14} />
           </button>
           <button
-            aria-label={settings.showCompleted ? text.todoList : text.completed}
+            aria-label={settings.showCompleted ? text.todoList : text.recycle}
             className={settings.showCompleted ? "icon-button active" : "icon-button subtle"}
-            onClick={() => updateSettings({ showCompleted: !settings.showCompleted, collapsed: false })}
-            title={settings.showCompleted ? text.todoList : text.completed}
+            onClick={toggleRecycle}
+            title={settings.showCompleted ? text.todoList : text.recycle}
             type="button"
           >
-            {settings.showCompleted ? <Archive size={14} /> : <CheckCheck size={14} />}
+            <Trash2 size={14} />
           </button>
           <button
             aria-label={settings.alwaysOnTop ? text.unpin : text.pin}
@@ -1883,8 +1912,8 @@ function App() {
           </button>
           <button
             aria-label={text.settings}
-            className="icon-button"
-            onClick={() => setSettingsOpen((current) => !current)}
+            className={settingsOpen ? "icon-button active" : "icon-button"}
+            onClick={() => changePanel("settings", true)}
             title={text.settings}
             type="button"
           >
@@ -1915,7 +1944,8 @@ function App() {
 
       {!settings.collapsed && (
         <>
-          <DataStatusBanner view={dataView} onOpen={() => setSettingsOpen(true)} />
+          <DataStatusBanner view={dataView} onOpen={() => changePanel("settings")} />
+          <div className="workspace">
           {!settings.showCompleted && (
             <section className="list-strip" aria-label="\u6e05\u5355\u7a97\u53e3">
               <div className="list-tabs" onWheel={handleListWheel} ref={listTabsRef}>
@@ -1959,6 +1989,12 @@ function App() {
             </section>
           )}
 
+          {settings.showCompleted && <div className="recycle-tabs" role="tablist" aria-label="回收站分类">
+            <button role="tab" aria-selected={recycleTab === "completed"} onClick={() => setRecycleTab("completed")} type="button">已完成 · {completedTodos.length}</button>
+            <button role="tab" aria-selected={recycleTab === "deleted"} onClick={() => setRecycleTab("deleted")} type="button">已删除 · {deletedTodos.length}</button>
+          </div>}
+          {settings.showCompleted && <p className="recycle-hint">{recycleTab === "deleted" ? "删除仅移入此处。恢复保留完成记录和计时，提醒需重新设置。" : "完成与删除分开保留；每日目标可选择日期撤销打卡。"}</p>}
+
           {searchOpen && (
             <div className="search-row">
               <Search size={14} />
@@ -1974,7 +2010,7 @@ function App() {
 
           <section
             className={
-              (settings.showCompleted ? completedTodos.length : visibleGroups.length) === 0
+              (settings.showCompleted ? recycleTodos.length : visibleGroups.length) === 0
                 ? "todo-list empty-list"
                 : "todo-list"
             }
@@ -1982,10 +2018,10 @@ function App() {
             onContextMenu={openQuickAddFromBlank}
           >
             {settings.showCompleted ? (
-              completedTodos.length === 0 ? (
-                <p className="empty">{text.completedEmpty}</p>
+              recycleTodos.length === 0 ? (
+                <p className="empty">{recycleTab === "deleted" ? "回收站中没有已删除的任务" : text.completedEmpty}</p>
               ) : (
-                completedTodos.map((todo) => renderTodo(todo, true))
+                recycleTodos.map(todo => renderArchivedTodo(todo))
               )
             ) : visibleGroups.length === 0 ? (
               <p className="empty">{text.empty}</p>
@@ -2003,21 +2039,298 @@ function App() {
             )}
           </section>
 
+          {settingsOpen && (
+            <section className="settings-panel tool-panel" aria-label="设置面板" onClick={(event) => event.stopPropagation()}>
+              <header>
+                <span>{text.settings}</span>
+                <button aria-label="关闭设置" onClick={() => changePanel(null)} type="button">
+                  <X size={13} />
+                </button>
+              </header>
+              <div className="setting-row">
+                <span>{text.color}</span>
+                <div className="swatches">
+                  {tintPresets.map((preset) => (
+                    <button
+                      aria-label={preset.label}
+                      className={settings.tint === preset.id ? "swatch active" : "swatch"}
+                      key={preset.id}
+                      onClick={() => updateSettings({ tint: preset.id })}
+                      style={{ "--swatch": preset.accent } as CSSProperties}
+                      title={preset.label}
+                      type="button"
+                    />
+                  ))}
+                </div>
+              </div>
+              <label className="setting-check">
+                <input
+                  checked={settings.alwaysOnTop}
+                  onChange={(event) => updateSettings({ alwaysOnTop: event.target.checked })}
+                  type="checkbox"
+                />
+                {text.pin}
+              </label>
+              <label className="setting-check">
+                <input
+                  disabled={!appWindow.native}
+                  checked={autoStartEnabled}
+                  onChange={toggleAutoStart}
+                  type="checkbox"
+                />
+                {text.autoStart}
+              </label>
+              <label className="setting-check">
+                <input
+                  checked={settings.eyeCare}
+                  onChange={(event) => updateSettings({ eyeCare: event.target.checked })}
+                  type="checkbox"
+                />
+                {text.eyeCare}
+              </label>
+              <label className="setting-number">
+                <span>{text.eyeCareMinutes}</span>
+                <input
+                  min="1"
+                  onChange={(event) =>
+                    updateSettings({ eyeCareMinutes: Math.max(1, Number(event.target.value) || 1) })
+                  }
+                  type="number"
+                  value={settings.eyeCareMinutes}
+                />
+              </label>
+              <DataSettings store={dataStore} view={dataView} timerActive={!!timingTodoId} />
+            </section>
+          )}
+
+          {calendarOpen && (
+            <section className="calendar-modal tool-panel" aria-label="完成日历面板" onClick={(event) => event.stopPropagation()}>
+              <header>
+                <div>
+                  <span>{text.calendar}</span>
+                  <small>{monthLabel(calendarMonth)}</small>
+                </div>
+                <div className="calendar-nav">
+                  <button onClick={() => changeCalendarMonth(-1)} title={text.prevMonth} type="button">
+                    <ChevronLeft size={14} />
+                  </button>
+                  <button onClick={() => changeCalendarMonth(1)} title={text.nextMonth} type="button">
+                    <ChevronRight size={14} />
+                  </button>
+                  <button aria-label="关闭完成日历" onClick={() => changePanel(null)} type="button">
+                    <X size={14} />
+                  </button>
+                </div>
+              </header>
+              <div className="calendar-grid" aria-label={text.heatmap}>
+                {heatmapDays.map((day) => (
+                  <button
+                    className={`calendar-day level-${Math.min(day.count, 4)} ${selectedDate === day.date ? "selected" : ""}`}
+                    key={day.date}
+                    onClick={() => {
+                      if (day.count > 0) {
+                        openDiary(day.date);
+                      } else {
+                        setSelectedDate(selectedDate === day.date ? null : day.date);
+                      }
+                    }}
+                    type="button"
+                  >
+                    <strong>{Number(day.date.slice(8))}</strong>
+                    <span>{day.count > 0 ? day.count : ""}</span>
+                  </button>
+                ))}
+              </div>
+              {selectedDate ? (
+                <div className="date-details">
+                  <div className="date-details-header">
+                    <span>{text.completedOn}</span>
+                    <small>{selectedDate}</small>
+                  </div>
+                  <div className="date-details-list">
+                    {selectedDateEvents.length > 0 ? (
+                      selectedDateEvents.map((event, index) => (
+                        <div className="date-detail-item" key={index}>
+                          <Check size={12} />
+                          <span>{event.title}</span>
+                          <small>{event.listName}</small>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="empty-detail">{text.none}</p>
+                    )}
+                  </div>
+                  {(() => {
+                    const timeDistribution = getTimeDistribution(todos, selectedDate);
+                    if (timeDistribution.length > 0) {
+                      return (
+                        <div className="time-distribution-compact">
+                          <strong>{text.timeDistribution}</strong>
+                          <PieChart data={timeDistribution} size={100} />
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
+                </div>
+              ) : (
+                <div className="latest-events">
+                  <span>{text.latestDone}</span>
+                  <small>
+                    {latestEvents.length > 0
+                      ? latestEvents.map((event) => `${event.date.slice(5)} ${event.title}`).join(" / ")
+                      : text.none}
+                  </small>
+                </div>
+              )}
+            </section>
+          )}
+
+          {diaryOpen && diaryDate && (
+            <section className="calendar-modal diary-panel tool-panel" aria-label="日记面板" onClick={(event) => event.stopPropagation()}>
+              <header>
+                <div>
+                  <span>{text.diary}</span>
+                  <small>{diaryDate}</small>
+                </div>
+                <div className="calendar-nav">
+                  <button aria-label="关闭日记" onClick={() => changePanel(null)} type="button">
+                    <X size={14} />
+                  </button>
+                </div>
+              </header>
+              <div className="diary-list">
+                <div className="standalone-diary-section">
+                  <strong>{text.standaloneDiary}</strong>
+                  <textarea
+                    onChange={(event) => { setStandaloneDiaryDraft(event.target.value); diaryDraftsRef.current.set(diaryDate, event.target.value); }}
+                    onBlur={saveStandaloneDiary}
+                    placeholder={text.standaloneDiaryPlaceholder}
+                    rows={5}
+                    value={standaloneDiaryDraft}
+                  />
+                </div>
+
+                {diaryEntries.completedTodos && diaryEntries.completedTodos.length > 0 && (
+                  <div className="completed-tasks-section">
+                    <strong>完成的任务</strong>
+                    {diaryEntries.completedTodos.map((todo) => {
+                      const listName = lists.find((list) => list.id === todo.listId)?.name || text.inbox;
+                      const isEditing = editingDiaryId === todo.id;
+
+                      // 计算当天的实际工作时间
+                      const timeOnDate = todo.timeEntries
+                        ?.filter((entry) => businessDate(new Date(entry.startTime)) === diaryDate)
+                        .reduce((sum, entry) => sum + entry.duration, 0) || 0;
+
+                      return (
+                        <div className="diary-entry" key={todo.id}>
+                          <div className="diary-entry-header">
+                            <div className="diary-entry-title">
+                              <Check size={14} />
+                              <span>{todo.title}</span>
+                            </div>
+                            <small>{listName}</small>
+                          </div>
+                          {todo.notes && (
+                            <div className="diary-entry-notes">
+                              <strong>{text.creationNotes}:</strong>
+                              <p>{todo.notes}</p>
+                            </div>
+                          )}
+                          {timeOnDate > 0 && (
+                            <div className="diary-entry-time">
+                              <strong>{text.timeSpent}:</strong>
+                              <span>{formatTime(timeOnDate)}</span>
+                            </div>
+                          )}
+                          {isEditing ? (
+                            <div className="diary-entry-completion">
+                              <strong>{text.completionNotes}:</strong>
+                              <form
+                                onSubmit={(event) => {
+                                  event.preventDefault();
+                                  commitDiaryEdit();
+                                }}
+                              >
+                                <textarea
+                                  autoFocus
+                                  onChange={(event) => setDiaryNotesDraft(event.target.value)}
+                                  onBlur={commitDiaryEdit}
+                                  placeholder={text.completionNotesPlaceholder}
+                                  rows={3}
+                                  value={diaryNotesDraft}
+                                />
+                              </form>
+                            </div>
+                          ) : (
+                            <div className="diary-entry-completion" onDoubleClick={() => startEditDiary(todo.id)}>
+                              <strong>{text.completionNotes}:</strong>
+                              <p>{todo.completionNotes || text.none}</p>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {diaryDate && (() => {
+                  const timeDistribution = getTimeDistribution(todos, diaryDate);
+                  if (timeDistribution.length > 0) {
+                    return (
+                      <div className="time-distribution-section">
+                        <strong>{text.timeDistribution}</strong>
+                        <div className="time-chart-container">
+                          <PieChart data={timeDistribution} size={200} />
+                          <div className="time-legend">
+                            {timeDistribution.map((item) => (
+                              <div className="time-legend-item" key={item.todoId}>
+                                <span className="legend-color" style={{ backgroundColor: `rgba(${item.color}, 0.8)` }} />
+                                <span className="legend-title">{item.title}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
+              </div>
+            </section>
+          )}
+          </div>
+
+          {notice && <div className="user-notice" role="status">
+            <span>{notice.message}</span>
+            {notice.action && <button type="button" disabled={!dataStore.canWrite} onClick={() => {
+              const action = notice.action!;
+              if (action.kind === "deletion") restoreDeletedTodo(action.id);
+              else undoTodoCompletion(action.id, action.date || today());
+            }}>{notice.action.kind === "deletion" ? "撤销删除" : "撤销完成"}</button>}
+            <button type="button" aria-label="关闭操作提示" onClick={() => setNotice(null)}><X size={12} /></button>
+          </div>}
+
           <footer>
-            {!appWindow.native && timingTodoId && <div className="browser-timer" aria-label="计时器">
-              <strong>{formatTime(timerElapsed)}</strong>
-              <button type="button" onClick={timerPaused ? resumeTimer : pauseTimer} disabled={timerPaused && !dataStore.canWrite}>{timerPaused ? "继续" : "暂停"}</button>
-              <button type="button" onClick={stopTimer}>停止并保存</button>
+            {timingTodoId && <div className="inline-timer" role="group" aria-label="计时器">
+              <span className="inline-timer-title">{todos.find(todo => todo.id === timingTodoId)?.title || "已删除任务"}</span>
+              <strong>{formatTime(timerElapsed)}{timerPaused ? " · 已暂停" : ""}</strong>
+              <div className="inline-timer-actions">
+                <button type="button" onClick={timerPaused ? resumeTimer : pauseTimer} disabled={timerPaused && (!dataStore.canWrite || !todos.some(todo => todo.id === timingTodoId && !todo.deletedAt))}>{timerPaused ? <Play size={12} /> : <Pause size={12} />}{timerPaused ? "继续计时" : "暂停计时"}</button>
+                <button type="button" onClick={stopTimer}>停止并保存</button>
+              </div>
+              {timerBridgeError && <small role="alert">{timerBridgeError}</small>}
             </div>}
             <span>
               {openCount} {text.open} / {completedCount} {text.finished}
             </span>
             <button
               className="footer-link"
-              onClick={() => updateSettings({ showCompleted: !settings.showCompleted })}
+              onClick={toggleRecycle}
               type="button"
             >
-              {settings.showCompleted ? text.todoList : text.completed}
+              {settings.showCompleted ? text.todoList : text.recycle}
             </button>
           </footer>
 
@@ -2436,267 +2749,7 @@ function App() {
             );
           })()}
 
-          {settingsOpen && (
-            <section className="settings-panel" onClick={(event) => event.stopPropagation()}>
-              <header>
-                <span>{text.settings}</span>
-                <button onClick={() => setSettingsOpen(false)} type="button">
-                  <X size={13} />
-                </button>
-              </header>
-              <div className="setting-row">
-                <span>{text.color}</span>
-                <div className="swatches">
-                  {tintPresets.map((preset) => (
-                    <button
-                      aria-label={preset.label}
-                      className={settings.tint === preset.id ? "swatch active" : "swatch"}
-                      key={preset.id}
-                      onClick={() => updateSettings({ tint: preset.id })}
-                      style={{ "--swatch": preset.accent } as CSSProperties}
-                      title={preset.label}
-                      type="button"
-                    />
-                  ))}
-                </div>
-              </div>
-              <label className="setting-check">
-                <input
-                  checked={settings.alwaysOnTop}
-                  onChange={(event) => updateSettings({ alwaysOnTop: event.target.checked })}
-                  type="checkbox"
-                />
-                {text.pin}
-              </label>
-              <label className="setting-check">
-                <input
-                  disabled={!appWindow.native}
-                  checked={autoStartEnabled}
-                  onChange={toggleAutoStart}
-                  type="checkbox"
-                />
-                {text.autoStart}
-              </label>
-              <label className="setting-check">
-                <input
-                  checked={settings.eyeCare}
-                  onChange={(event) => updateSettings({ eyeCare: event.target.checked })}
-                  type="checkbox"
-                />
-                {text.eyeCare}
-              </label>
-              <label className="setting-number">
-                <span>{text.eyeCareMinutes}</span>
-                <input
-                  min="1"
-                  onChange={(event) =>
-                    updateSettings({ eyeCareMinutes: Math.max(1, Number(event.target.value) || 1) })
-                  }
-                  type="number"
-                  value={settings.eyeCareMinutes}
-                />
-              </label>
-              <DataSettings store={dataStore} view={dataView} timerActive={!!timingTodoId} />
-            </section>
-          )}
 
-          {calendarOpen && (
-            <section className="calendar-modal" onClick={(event) => event.stopPropagation()}>
-              <header>
-                <div>
-                  <span>{text.calendar}</span>
-                  <small>{monthLabel(calendarMonth)}</small>
-                </div>
-                <div className="calendar-nav">
-                  <button onClick={() => changeCalendarMonth(-1)} title={text.prevMonth} type="button">
-                    <ChevronLeft size={14} />
-                  </button>
-                  <button onClick={() => changeCalendarMonth(1)} title={text.nextMonth} type="button">
-                    <ChevronRight size={14} />
-                  </button>
-                  <button onClick={() => setCalendarOpen(false)} type="button">
-                    <X size={14} />
-                  </button>
-                </div>
-              </header>
-              <div className="calendar-grid" aria-label={text.heatmap}>
-                {heatmapDays.map((day) => (
-                  <button
-                    className={`calendar-day level-${Math.min(day.count, 4)} ${selectedDate === day.date ? "selected" : ""}`}
-                    key={day.date}
-                    onClick={() => {
-                      if (day.count > 0) {
-                        openDiary(day.date);
-                      } else {
-                        setSelectedDate(selectedDate === day.date ? null : day.date);
-                      }
-                    }}
-                    type="button"
-                  >
-                    <strong>{Number(day.date.slice(8))}</strong>
-                    <span>{day.count > 0 ? day.count : ""}</span>
-                  </button>
-                ))}
-              </div>
-              {selectedDate ? (
-                <div className="date-details">
-                  <div className="date-details-header">
-                    <span>{text.completedOn}</span>
-                    <small>{selectedDate}</small>
-                  </div>
-                  <div className="date-details-list">
-                    {selectedDateEvents.length > 0 ? (
-                      selectedDateEvents.map((event, index) => (
-                        <div className="date-detail-item" key={index}>
-                          <Check size={12} />
-                          <span>{event.title}</span>
-                          <small>{event.listName}</small>
-                        </div>
-                      ))
-                    ) : (
-                      <p className="empty-detail">{text.none}</p>
-                    )}
-                  </div>
-                  {(() => {
-                    const timeDistribution = getTimeDistribution(todos, selectedDate);
-                    if (timeDistribution.length > 0) {
-                      return (
-                        <div className="time-distribution-compact">
-                          <strong>{text.timeDistribution}</strong>
-                          <PieChart data={timeDistribution} size={100} />
-                        </div>
-                      );
-                    }
-                    return null;
-                  })()}
-                </div>
-              ) : (
-                <div className="latest-events">
-                  <span>{text.latestDone}</span>
-                  <small>
-                    {latestEvents.length > 0
-                      ? latestEvents.map((event) => `${event.date.slice(5)} ${event.title}`).join(" / ")
-                      : text.none}
-                  </small>
-                </div>
-              )}
-            </section>
-          )}
-
-          {diaryOpen && diaryDate && (
-            <section className="calendar-modal" onClick={(event) => event.stopPropagation()}>
-              <header>
-                <div>
-                  <span>{text.diary}</span>
-                  <small>{diaryDate}</small>
-                </div>
-                <div className="calendar-nav">
-                  <button onClick={() => setDiaryOpen(false)} type="button">
-                    <X size={14} />
-                  </button>
-                </div>
-              </header>
-              <div className="diary-list">
-                <div className="standalone-diary-section">
-                  <strong>{text.standaloneDiary}</strong>
-                  <textarea
-                    onChange={(event) => setStandaloneDiaryDraft(event.target.value)}
-                    onBlur={saveStandaloneDiary}
-                    placeholder={text.standaloneDiaryPlaceholder}
-                    rows={5}
-                    value={standaloneDiaryDraft}
-                  />
-                </div>
-
-                {diaryEntries.completedTodos && diaryEntries.completedTodos.length > 0 && (
-                  <div className="completed-tasks-section">
-                    <strong>完成的任务</strong>
-                    {diaryEntries.completedTodos.map((todo) => {
-                      const listName = lists.find((list) => list.id === todo.listId)?.name || text.inbox;
-                      const isEditing = editingDiaryId === todo.id;
-
-                      // 计算当天的实际工作时间
-                      const timeOnDate = todo.timeEntries
-                        ?.filter((entry) => businessDate(new Date(entry.startTime)) === diaryDate)
-                        .reduce((sum, entry) => sum + entry.duration, 0) || 0;
-
-                      return (
-                        <div className="diary-entry" key={todo.id}>
-                          <div className="diary-entry-header">
-                            <div className="diary-entry-title">
-                              <Check size={14} />
-                              <span>{todo.title}</span>
-                            </div>
-                            <small>{listName}</small>
-                          </div>
-                          {todo.notes && (
-                            <div className="diary-entry-notes">
-                              <strong>{text.creationNotes}:</strong>
-                              <p>{todo.notes}</p>
-                            </div>
-                          )}
-                          {timeOnDate > 0 && (
-                            <div className="diary-entry-time">
-                              <strong>{text.timeSpent}:</strong>
-                              <span>{formatTime(timeOnDate)}</span>
-                            </div>
-                          )}
-                          {isEditing ? (
-                            <div className="diary-entry-completion">
-                              <strong>{text.completionNotes}:</strong>
-                              <form
-                                onSubmit={(event) => {
-                                  event.preventDefault();
-                                  commitDiaryEdit();
-                                }}
-                              >
-                                <textarea
-                                  autoFocus
-                                  onChange={(event) => setDiaryNotesDraft(event.target.value)}
-                                  onBlur={commitDiaryEdit}
-                                  placeholder={text.completionNotesPlaceholder}
-                                  rows={3}
-                                  value={diaryNotesDraft}
-                                />
-                              </form>
-                            </div>
-                          ) : (
-                            <div className="diary-entry-completion" onDoubleClick={() => startEditDiary(todo.id)}>
-                              <strong>{text.completionNotes}:</strong>
-                              <p>{todo.completionNotes || text.none}</p>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {diaryDate && (() => {
-                  const timeDistribution = getTimeDistribution(todos, diaryDate);
-                  if (timeDistribution.length > 0) {
-                    return (
-                      <div className="time-distribution-section">
-                        <strong>{text.timeDistribution}</strong>
-                        <div className="time-chart-container">
-                          <PieChart data={timeDistribution} size={200} />
-                          <div className="time-legend">
-                            {timeDistribution.map((item) => (
-                              <div className="time-legend-item" key={item.todoId}>
-                                <span className="legend-color" style={{ backgroundColor: `rgba(${item.color}, 0.8)` }} />
-                                <span className="legend-title">{item.title}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  }
-                  return null;
-                })()}
-              </div>
-            </section>
-          )}
         </>
       )}
 
@@ -2718,6 +2771,37 @@ function App() {
 
     </main>
   );
+
+  function renderArchivedTodo(todo: Todo) {
+    const deleted = !!todo.deletedAt;
+    const dates = [...todo.completionDates].sort().reverse();
+    const undoDate = dates.includes(undoDates[todo.id]) ? undoDates[todo.id] : dates[0];
+    const list = lists.find(list => list.id === todo.listId)?.name || text.inbox;
+    return <article className="archive-card" aria-label={todo.title} key={todo.id}>
+      <strong>{todo.title}</strong>
+      <small>{list} · {todo.isGroup ? "任务集" : isGoal(todo) ? "每日目标" : todo.parentId ? "子任务" : "任务"}{deleted ? ` · 删除于 ${dateTimeLocal(new Date(todo.deletedAt!)).replace("T", " ")}` : ""}</small>
+      <details>
+        <summary>查看记录 · 计时 {formatTime(todo.totalTimeSpent)} · {dates.length} 次完成</summary>
+        {dates.length > 0 && <p>完成日期：{dates.join("、")}</p>}
+        {todo.notes && <p>备注：{todo.notes}</p>}
+        {todo.completionNotes && <p>完成说明：{todo.completionNotes}</p>}
+        {todo.timeEntries.length > 0 && <p>{todo.timeEntries.length} 段计时记录已保留。</p>}
+      </details>
+      <div className="archive-actions">
+        {deleted ? <button type="button" disabled={!dataStore.canWrite} onClick={() => restoreDeletedTodo(todo.id)}><RotateCcw size={13} />恢复{todo.isGroup ? "任务集" : ""}</button> : <>
+          {isGoal(todo) && <label>打卡日期
+            <select aria-label={`${todo.title}：要撤销的打卡日期`} value={undoDate} onChange={event => setUndoDates(current => ({ ...current, [todo.id]: event.target.value }))}>
+              {dates.map(date => <option key={date} value={date}>{date}{date === today() ? "（今天）" : ""}</option>)}
+            </select>
+          </label>}
+          <button type="button" disabled={!dataStore.canWrite || (isGoal(todo) && !undoDate)} onClick={() => undoTodoCompletion(todo.id, undoDate || today())}>
+            <RotateCcw size={13} />{isGoal(todo) ? undoDate === today() ? "撤销今日打卡" : "撤销打卡" : todo.isGroup ? "撤销完成（含子任务）" : "撤销完成"}
+          </button>
+          <button type="button" className="archive-delete" aria-label="移入回收站" title="移到已删除，可恢复" disabled={!dataStore.canWrite} onClick={() => removeTodo(todo.id)}><Trash2 size={14} /></button>
+        </>}
+      </div>
+    </article>;
+  }
 
   function renderGroupTodos(group: VisibleGroup) {
     const visibleIds = new Set(group.todos.map((todo) => todo.id));
@@ -2835,6 +2919,9 @@ function App() {
           </div>
         )}
         <div className="todo-actions">
+          {timingTodoId === todo.id && <button className="task-timer-control" type="button" aria-label={timerPaused ? "继续计时" : "暂停计时"} title={timerPaused ? "继续计时" : "暂停计时"} onClick={timerPaused ? resumeTimer : pauseTimer} disabled={timerPaused && !dataStore.canWrite}>
+            {timerPaused ? <Play size={14} /> : <Pause size={14} />}
+          </button>}
           {todo.isGroup && (
             <button
               className={todo.collapsed ? "collapse-button collapsed" : "collapse-button"}
@@ -2869,6 +2956,7 @@ function App() {
 
 function getCompletionEvents(todos: Todo[], lists: TodoList[]): CompletionEvent[] {
   return todos
+    .filter(todo => !todo.deletedAt)
     .flatMap((todo) => {
       const listName = lists.find((list) => list.id === todo.listId)?.name || text.inbox;
       return todo.completionDates.map((date) => ({
@@ -2917,7 +3005,7 @@ function getTimeDistribution(todos: Todo[], date: string): TimeDistribution[] {
   const timeByTodo = new Map<string, { title: string; timeSpent: number }>();
 
   todos.forEach((todo) => {
-    if (!todo.timeEntries || todo.timeEntries.length === 0) return;
+    if (todo.deletedAt || !todo.timeEntries || todo.timeEntries.length === 0) return;
 
     // 计算该任务在指定日期的所有时间条目
     const timeOnDate = todo.timeEntries

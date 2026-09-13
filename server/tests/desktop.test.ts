@@ -11,6 +11,7 @@ import { normalizeServerUrl } from '../../src/data/api';
 import { emptyBusiness, type BusinessData, type Todo } from '../../shared/domain.ts';
 import { Store } from '../src/store.ts';
 import { buildApp } from '../src/app.ts';
+import { restoreTodo, trashTodo } from '../../shared/recycle.ts';
 const APP = 'desktop-test-only-00000000000000000000000000';
 const BOT = 'bot-test-only-000000000000000000000000000000';
 const URL = 'http://127.0.0.1:3210';
@@ -208,4 +209,44 @@ it('keeps one stable checkpoint per timer and only discards recovery explicitly'
   expect(reopened.getTimerRecoveries().entries[0].entry.duration).toBe(10);
   reopened.discardTimerRecoveries(); expect(createStore().getSnapshot().timerRecoveryCount).toBe(0);
   expect(JSON.parse(localStorage.getItem(LOCAL_KEYS.todos)!)).toEqual(original.todos);
+});
+
+it('syncs recoverable deletion/restoration without overwriting original local data', async () => {
+  const first = await connect();
+  const task = { ...todo('Recycle round trip'), completionDates: ['2026-09-12'], notes: 'Synthetic note', totalTimeSpent: 25 };
+  first.set('todos', [task]); await saved(first);
+  const second = await connect();
+  first.set('todos', rows => trashTodo(rows, task.id, new Date().toISOString(), randomUUID())); await saved(first);
+  await second.refresh();
+  expect(second.getSnapshot().data.todos[0].deletedAt).toBeTruthy();
+  const exported = parseBackup(JSON.stringify(second.makeBackup()));
+  expect(exported.business.todos[0]).toMatchObject({ notes: 'Synthetic note', totalTimeSpent: 25, completionDates: ['2026-09-12'] });
+  second.set('todos', rows => restoreTodo(rows, task.id, new Date().toISOString())); await saved(second);
+  await first.refresh();
+  expect(first.getSnapshot().data.todos[0].deletedAt).toBeUndefined();
+  expect(first.getSnapshot().data.todos[0].totalTimeSpent).toBe(25);
+  expect(JSON.parse(localStorage.getItem(LOCAL_KEYS.todos)!)).toEqual(original.todos);
+});
+
+it('pulls other-client changes on the 5-second cadence and immediately on focus/online', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  let desktop: BusinessStore | undefined;
+  try {
+    desktop = await connect();
+    const createRemoteTask = async () => {
+      const response = await app.inject({ method: 'POST', url: '/api/v1/mutations', headers: { authorization: `Bearer ${APP}` }, payload: {
+        expectedRevision: db.revision(), mutationId: randomUUID(), operations: [{ type: 'todo.put', value: todo('Other client') }],
+      } });
+      expect(response.statusCode).toBe(200);
+    };
+    await createRemoteTask();
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(desktop.getSnapshot().data.todos).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => expect(desktop!.getSnapshot().data.todos).toHaveLength(1));
+    await createRemoteTask(); window.dispatchEvent(new Event('focus'));
+    await vi.waitFor(() => expect(desktop!.getSnapshot().data.todos).toHaveLength(2));
+    await createRemoteTask(); window.dispatchEvent(new Event('online'));
+    await vi.waitFor(() => expect(desktop!.getSnapshot().data.todos).toHaveLength(3));
+  } finally { desktop?.dispose(); vi.useRealTimers(); }
 });

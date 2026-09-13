@@ -8,8 +8,9 @@ import { buildApp } from '../src/app.ts';
 import { Store } from '../src/store.ts';
 import { backupDatabase } from '../src/backup.ts';
 import { readConfig, type ServerConfig } from '../src/config.ts';
-import { emptyBusiness, type BusinessData, type Todo } from '../../shared/domain.ts';
+import { backupSchema, emptyBusiness, type BusinessData, type Todo } from '../../shared/domain.ts';
 import { dateInZone, wallToInstant } from '../../shared/time.ts';
+import { restoreTodo, trashTodo } from '../../shared/recycle.ts';
 
 const APP_TOKEN = 'app-test-only-000000000000000000000000000000';
 const BOT_TOKEN = 'bot-test-only-000000000000000000000000000000';
@@ -65,6 +66,7 @@ describe('security and validation', () => {
     expect(JSON.stringify(view)).not.toContain('private-journal');
   });
   it.each([
+    { deletedAt: '2026-09-13T00:00:00Z' }, { deletionBatchId: randomUUID() },
     { dueDate: '2026-02-30' }, { totalTimeSpent: -1 }, { title: '' }, { listId: 'missing-list' },
     { parentId: 'missing-task' }, { goalStartDate: '2026-09-13' },
     { goalStartDate: '2026-09-14', goalEndDate: '2026-09-13' },
@@ -260,4 +262,51 @@ it('only one reminder mode can be set, and changing mode clears the other', asyn
   expect(store.snapshot().todos[0].reminderTime).toBeUndefined();
   expect((await botAction({ action: 'remind', taskId: todo.id, reminderTime: '21:00' })).statusCode).toBe(200);
   expect(store.snapshot().todos[0].reminderAt).toBeUndefined();
+});
+
+describe('recycle bin persistence and reminder safety', () => {
+  it('hides trashed tasks from bot queries/actions and cancels even an already leased reminder', async () => {
+    const goal = task({ goalStartDate: '2026-09-12', goalEndDate: '2026-09-30', reminderTime: '07:59', completionDates: ['2026-09-12'] });
+    expect((await put(goal)).statusCode).toBe(200);
+    bind();
+    const [leased] = store.claim();
+    expect(leased.todoId).toBe(goal.id);
+    expect((await put(trashTodo([goal], goal.id, new Date(now).toISOString(), randomUUID())[0])).statusCode).toBe(200);
+    expect(store.validateLease(leased.id, leased.leaseToken)).toBe(false);
+    expect(store.claim()).toEqual([]);
+    expect((await app.inject({ url: '/api/v1/bot/tasks', headers: headers(true) })).json().tasks).toEqual([]);
+    const revision = store.revision();
+    expect((await botAction({ action: 'complete', taskId: goal.id, completed: true })).statusCode).toBe(404);
+    expect((await botAction({ action: 'remind', taskId: goal.id, reminderTime: '09:00' })).statusCode).toBe(404);
+    expect(store.revision()).toBe(revision);
+    expect((await app.inject({ method: 'POST', url: `/api/v1/bot/reminders/${leased.id}/ack`, headers: headers(true), payload: { leaseToken: leased.leaseToken, messageId: '123456789' } })).statusCode).toBe(409);
+    const recovered = restoreTodo(store.snapshot().todos, goal.id, new Date(now).toISOString())[0];
+    expect((await put(recovered)).statusCode).toBe(200);
+    expect(store.claim()).toEqual([]); // recovery is not a request to replay an old reminder
+    expect(store.snapshot().todos[0].completionDates).toEqual(['2026-09-12']);
+    expect((await app.inject({ url: '/api/v1/bot/tasks', headers: headers(true) })).json().tasks).toHaveLength(1);
+    await put({ ...recovered, reminderTime: '08:01' });
+    now += 61_000;
+    expect(store.claim()).toHaveLength(1); // deliberately setting a new reminder works
+  });
+
+  it('retains tombstones, completion history and time in JSON export and a verified SQLite backup', async () => {
+    const goal = task({ goalStartDate: '2026-09-10', goalEndDate: '2026-09-30', completionDates: ['2026-09-12'],
+      completionNotes: 'Synthetic history', timeEntries: [{ id: 'synthetic-timer', startTime: new Date(now).toISOString(), duration: 300 }], totalTimeSpent: 300 });
+    const deleted = trashTodo([goal], goal.id, new Date(now).toISOString(), randomUUID())[0];
+    expect((await put(deleted)).statusCode).toBe(200);
+    const exported = backupSchema.parse((await app.inject({ url: '/api/v1/export', headers: headers() })).json());
+    expect(exported.business.todos).toEqual([deleted]);
+    const path = join(directory, 'recycle-backup.db');
+    await backupDatabase(config.dbPath, path);
+    const restored = new Store(path, config.timeZone, () => now);
+    try {
+      expect(restored.snapshot().todos).toEqual([deleted]);
+      expect(restored.snapshot().revision).toBe(store.revision());
+    } finally { restored.close(); }
+    await app.close(); store.close();
+    store = new Store(config.dbPath, config.timeZone, () => now);
+    app = await buildApp(config, { store });
+    expect((await app.inject({ url: '/api/v1/state', headers: headers() })).json().todos).toEqual([deleted]);
+  });
 });

@@ -52,6 +52,14 @@ jobs:
       # Random test tokens, a separate Compose project/volume and simulated OneBot.
       # Never needs production secrets or access to a real QQ account.
       - run: npm run test:e2e -- --docker-image todo-widget-api:integration-test --browser
+      - run: npm run test:ui -- --docker-image todo-widget-api:integration-test --screenshots artifacts/ui-regressions
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: synthetic-ui-regressions
+          path: artifacts/ui-regressions
+          if-no-files-found: ignore
+          retention-days: 7
   windows:
     runs-on: windows-latest
     steps:

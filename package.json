@@ -24,6 +24,7 @@
     "package:plugin": "python3 tools/package_astrbot.py",
     "test:e2e": "python3 tools/e2e.py",
     "test:e2e:browser": "python3 tools/e2e.py --browser",
+    "test:ui": "python3 tools/ui_regression.py",
     "check:tauri-versions": "python3 tools/check_tauri_versions.py",
     "test:tools": "python3 -m unittest discover -s tests/tools -v"
   },

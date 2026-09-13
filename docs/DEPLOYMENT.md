@@ -147,6 +147,8 @@ docker compose -f deploy/compose.yml up -d todo-api
 
 ## 7. 可复现检查与真实验收
 
+交互修复请先按[计时/面板/回收站独立测试清单](UI_ACCEPTANCE.md)验收；先备份并更新测试 API，再换新版 EXE，不迁移原始个人数据，不清空已有测试卷。
+
 ```bash
 npm ci
 npm run check:tauri-versions                 # Python 3.12；npm/Rust 锁文件版本一致
@@ -167,6 +169,7 @@ python3 -m pip install -r tools/requirements-e2e.txt
 python3 -m playwright install chromium
 docker build -f deploy/Dockerfile -t todo-widget-api:integration-test .
 npm run test:e2e -- --docker-image todo-widget-api:integration-test --browser
+npm run test:ui -- --docker-image todo-widget-api:integration-test
 ```
 
 端到端脚本检查密钥文件0600和拒绝覆盖，使用随机测试 token、合成任务，并在 finally 中清理。Docker 路径直接使用本仓库的 Compose 配置，以随机项目名/loopback端口创建独立容器与卷；只有该隔离项目会执行带卷清理，绝不针对生产项目。测试包含在线备份、停服后从只读备份恢复、保留旧 DB/WAL/SHM，以及恢复后业务数据/绑定/outbox/幂等记录核对。不会读取生产 AstrBot 配置、Windows数据或调用真实QQ。测试API是实际HTTP与SQLite；QQ回执是模拟，不声称真实送达。

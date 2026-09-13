@@ -36,6 +36,14 @@ API 默认 `127.0.0.1:3210`；只有 `/healthz` 无需认证。不要在 URL 中
 备份格式：`{format:"todo-widget.backup",version:1,exportedAt,timeZone,business:{lists,todos,diary},deviceSettings?}`。
 `deviceSettings` 不写入服务器，不推测旧历史日期。时区不匹配则拒绝导入。
 
+## 可恢复删除（新版桌面）
+
+桌面垃圾桶使用 `todo.put` 保留完整任务，并同时写入 `deletedAt`（ISO 瞬时）和 `deletionBatchId`（UUID）；恢复时清除两字段，并清除旧提醒时间，避免意外补发。任务集及其尚未删除的子任务在同一原子变更中标记同一批次，只恢复同批次子任务。单独恢复仍在已删除任务集下的子任务会解除父子关系。
+
+`GET /state` 和业务备份保留删除标记与历史，bot 查询排除已删除任务，bot 完成/改期这类任务返回 404；删除使 pending/leased 提醒取消。**现有协议的 `todo.delete` 仍是物理删除**，不是新 UI 垃圾桶，不可把二者混用。
+
+新字段同时存在或同时缺省；活动子任务不能挂在已删除任务集下。API 与客户端需配套升级；严格校验的旧客户端不支持含删除标记的快照/备份，见[验收说明](UI_ACCEPTANCE.md)。
+
 ## Bot token（不能访问以上端点）
 
 - `GET /api/v1/bot/tasks` → revision、服务器时间/日期/时区、清单、任务；**无日记、完成说明或详细计时记录**。

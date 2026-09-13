@@ -47,10 +47,13 @@ export const todoSchema = z.object({
   collapsed: z.boolean(),
   createdAt: instantSchema,
   updatedAt: instantSchema,
+  deletedAt: instantSchema.optional(),
+  deletionBatchId: z.string().uuid().optional(),
   timeEntries: z.array(timeEntrySchema).max(20_000),
   totalTimeSpent: secondsSchema,
 }).strict().superRefine((todo, ctx) => {
   const issue = (message: string) => ctx.addIssue({ code: 'custom', message });
+  if (!!todo.deletedAt !== !!todo.deletionBatchId) issue('Deletion timestamp and batch must be provided together');
   if (!!todo.goalStartDate !== !!todo.goalEndDate) issue('Both goal dates are required');
   if (todo.goalStartDate && todo.goalEndDate && todo.goalStartDate > todo.goalEndDate) issue('Goal range is reversed');
   if (todo.startDate && todo.endDate && todo.startDate > todo.endDate) issue('Task range is reversed');
@@ -83,6 +86,7 @@ export const businessSchema = z.object({
     if (todo.parentId) {
       const parent = todos.get(todo.parentId);
       if (!parent?.isGroup || parent.listId !== todo.listId || parent.id === todo.id) issue(`Invalid parent for task ${todo.id}`);
+      if (parent?.deletedAt && !todo.deletedAt) issue(`Active task ${todo.id} cannot belong to a deleted group`);
     }
   }
   if (new Set(state.diary.map(d => d.date)).size !== state.diary.length) issue('Only one diary entry per day');

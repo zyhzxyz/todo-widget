@@ -53,6 +53,7 @@ export function DataSettings({ store, view, timerActive }: { store: BusinessStor
     </div>
     {timerActive && <p className="data-warning">请先停止计时，再切换数据源或导入。</p>}
     {view.mode === 'remote' && <>
+      <p className="data-explanation">本机修改立即提交；其他端更新每 5 秒检查一次，切回窗口或网络恢复时也会刷新。计时停止或完成后同步，不逐秒上传。</p>
       <p className="data-explanation">原本地数据不会上传或被覆盖。机器人创建的任务约 5 秒内刷新；断网只能查看缓存。</p>
       <div className="data-actions">
         <button type="button" disabled={disabled} onClick={() => void run(() => store.retry())}>{view.hasPending ? '重试原操作' : '刷新连接'}</button>
