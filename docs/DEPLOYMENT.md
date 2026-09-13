@@ -8,6 +8,16 @@ QQ <--> NapCat <--> AstrBot 插件 -- bot token ------^
                                本机回执/操作日志（不含token）
 ```
 
+## 0. 获取 Windows 与插件构建产物
+
+在 [GitHub Actions / Checks](https://github.com/zyhzxyz/todo-widget/actions/workflows/ci.yml) 中选择 **`feature/server-astrbot` 分支、对应提交且全部通过**的运行，再下载页面底部的 Artifacts。`main` 的基础修复版不包含服务器模式，不要选错分支。
+
+- `todo-widget-windows`：解压得到 `todo-widget.exe`。当前 CI 使用 `--no-bundle`，这是 Windows 可执行文件，不是安装器；需要 Windows/WebView2 环境。
+- `astrbot-plugin-todo-widget`：先解开 Actions 下载的外层 ZIP，再把里面的 **`astrbot_plugin_todo_widget.zip`** 上传到 AstrBot。不要上传 Actions 外层 ZIP，也不要把整个项目当插件安装。
+- 构建成功只证明能生成产物，不等于实际 Windows/QQ 验收。更新前退出旧程序并备份旧数据，保留原 EXE；应用标识仍是 `com.local.todo-widget`，不要删除 AppData 中的旧配置或 LevelDB 来“干净安装”。
+
+下载 Actions 产物需要登录可访问该仓库的 GitHub 账号。产物会按仓库保留期过期；过期时选更新的成功运行，或按 README 自行构建。插件安装、加载/重启与真实发信仍需用户单独确认。
+
 ## 1. 新服务的隔离与凭据
 
 需要 Docker Engine + Compose v2（以下 host 网络适用于 Linux 服务器）。代码无需访问 Windows 原始 LevelDB，部署不会把个人数据加入 Git。
@@ -139,6 +149,8 @@ docker compose -f deploy/compose.yml up -d todo-api
 
 ```bash
 npm ci
+npm run check:tauri-versions                 # Python 3.12；npm/Rust 锁文件版本一致
+npm run test:tools
 npm test
 npm run test:server
 npm run typecheck
@@ -161,4 +173,4 @@ npm run test:e2e -- --docker-image todo-widget-api:integration-test --browser
 
 Linux 如缺 Chromium 系统库，可在有管理员权限的测试环境运行 `python3 -m playwright install --with-deps chromium`（CI 使用此方式）。
 
-上线前仍必须手工验收：Windows EXE 构建、Tauri 文件保存/托盘/计时窗口、真实旧数据迁移；白名单QQ创建任务→桌面显示、桌面提醒→真实QQ送达；群聊拒绝、断网只读、并发冲突；真实服务器备份恢复。见 [计划验收清单](SERVER_ASTRBOT_PLAN.md)。
+上线前须确认对应提交的 Windows CI 通过，并手工验收：Tauri 文件保存/托盘/计时窗口、真实旧数据迁移；白名单QQ创建任务→桌面显示、桌面提醒→真实QQ送达；群聊拒绝、断网只读、并发冲突；真实服务器备份恢复。见 [计划验收清单](SERVER_ASTRBOT_PLAN.md)。

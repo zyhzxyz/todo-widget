@@ -6,7 +6,7 @@
 
 本 GitHub 仓库是 monorepo，**不要将整个 todo-widget 仓库作为 AstrBot 插件直接安装**。
 
-1. 仓库根目录运行 `python3 tools/package_astrbot.py`，得到 `artifacts/astrbot_plugin_todo_widget.zip`，然后使用 AstrBot 的本地插件 ZIP 上传安装。
+1. 仓库根目录运行 `python3 tools/package_astrbot.py`，得到 `artifacts/astrbot_plugin_todo_widget.zip`，然后使用 AstrBot 的本地插件 ZIP 上传安装。 也可从 `feature/server-astrbot` 的成功 GitHub Actions 下载 `astrbot-plugin-todo-widget` artifact：先解压 Actions 的外层 ZIP，再上传其中的 `astrbot_plugin_todo_widget.zip`，不要上传外层包。
 2. 或者只复制这个目录到 AstrBot 的 `data/plugins/astrbot_plugin_todo_widget`，确认所有文件归 AstrBot 容器的运行 UID/GID 所有，再由管理员加载插件。不要改整个 `data` 树的权限。
 3. 在插件配置里填写 `server_url`、独立 **bot token**、`allowed_qq_ids`（字符串列表）和 `allowed_platform_ids`（平台**实例 ID**，不是类型名 `aiocqhttp`）。先保持禁用，检查地址和白名单后启用。
 4. 由允许的 QQ 在指定平台私聊发送 `/待办 绑定`。绑定收件人只来自真实消息事件，工具/模型不能指定另一个人。已有其他绑定时先从桌面解除，不能直接抢占。

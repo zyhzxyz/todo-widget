@@ -4,7 +4,8 @@
 
 - GitHub 首轮功能分支 CI 发现通知插件 Rust `2.4.0` 与 npm `2.3.3` 不匹配；将 npm 通知插件对齐到 `2.4.0`，不跳过 Tauri 的版本检查。
 - 增加 `npm run check:tauri-versions`，直接检查两份锁文件中的 Tauri API/插件 major.minor，提前发现跨语言依赖漂移；附带工具回归测试。
-- 首轮功能分支的前端/API/插件测试与 Node、Docker/Chromium 端到端已通过；修复后的 Windows 构建结果继续以对应 GitHub Actions 为准，不能当作 Windows 真机运行验收。
+- 修复提交 `471b945` 的 [GitHub Actions](https://github.com/zyhzxyz/todo-widget/actions/runs/34739378441) 已全部通过：前端21项、API/桌面49项、插件27项、工具7项、类型检查、构建、Node及Docker/Chromium端到端、Windows EXE构建。
+- 已下载并核对该次 Windows x64 EXE、插件 ZIP 的来源与结构，插件7文件逐一匹配提交内容；增加正确选择分支和解开 Actions 外层 ZIP 的说明。这不是 Windows 真机运行或真实 QQ 收发验收。
 
 ## 2026-09-13 — 部署与隔离端到端验证
 
@@ -14,7 +15,7 @@
 - 增加使用真实 HTTP/SQLite、插件核心及模拟 OneBot 的端到端脚本；Docker 路径直接使用本仓库 Compose 并隔离项目/端口/数据卷，Chromium 验证原本地导出、远程每日目标与断网只读。
 - 验证丢失写入响应、QQ失败退避、完成后取消、ACK丢失后重启、在线备份、实际恢复及幂等账本；所有测试只使用合成数据，不调用真实QQ。
 - 本机前端21项、API/桌面49项、插件27项、三套类型检查、前端构建、Node和Compose/Chromium端到端全部通过；`npm audit` 为0漏洞。
-- CI 已配置以上检查、插件 ZIP 与 Windows EXE 构建。GitHub 授权已完成，基础修复 `faa4b18` 已推送 `main`，功能实现 `d1107c4` 已推送 `feature/server-astrbot`；远程 CI 正在核验。生产部署和真实 Windows/QQ 验收仍待完成，不把本机模拟结果当作真机上线结果。
+- CI 已配置以上检查、插件 ZIP 与 Windows EXE 构建。GitHub 授权已完成，基础修复 `faa4b18` 已推送 `main`，功能实现 `d1107c4` 已推送 `feature/server-astrbot`；修复后的远程 CI 已通过，见上方对应提交的验证记录。生产部署和真实 Windows/QQ 验收仍待完成，不把本机模拟结果当作真机上线结果。
 
 ## 2026-09-13 — AstrBot 插件
 

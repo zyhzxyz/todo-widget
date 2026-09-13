@@ -17,7 +17,7 @@ npm run tauri:build      # 生成 EXE（不生成安装包）
 npm run tauri:bundle     # 生成安装包
 ```
 
-EXE 路径：`src-tauri\target\release\todo-widget.exe`。GitHub Actions 成功完成 Windows 构建后，也可从对应 workflow 的 artifact 下载 `todo-widget-windows`。
+EXE 路径：`src-tauri\target\release\todo-widget.exe`。GitHub Actions 成功完成 Windows 构建后，也可从对应 workflow 的 artifact 下载 `todo-widget-windows`。 服务器模式请选择 `feature/server-astrbot` 分支的成功运行；Windows/插件产物的解压方式见 [下载说明](docs/DEPLOYMENT.md#0-获取-windows-与插件构建产物)。
 
 单独的 `npm run dev` 只是前端开发服务器；原生窗口功能需要从 Tauri 启动，不能将普通浏览器预览当成完整桌面程序。
 
@@ -70,9 +70,11 @@ EXE 路径：`src-tauri\target\release\todo-widget.exe`。GitHub Actions 成功�
 
 `npm test` 覆盖本地日期/月份、到期显示、跨日每日目标、空清单重启、置顶恢复、计时切换/暂停及异步窗口竞态。原生 Tauri API 在自动化前端测试中被模拟，不能代替真实 Windows 的托盘、多显示器、休眠与窗口操作验收。
 
+`npm run check:tauri-versions` 比较 npm/Rust 锁文件中的 Tauri API/插件 major.minor，允许 patch 差异；`npm run test:tools` 检查版本漂移检测逻辑（Python 3.12）。它不能代替原生构建。
+
 服务器/API 与桌面数据层测试：`npm run test:server`；插件单元测试：`npm run test:plugin`（Python 3.12）。`npm run test:e2e` 使用临时 Node API/SQLite 和模拟 OneBot，覆盖请求丢失、重启、提醒失败与备份恢复。真实 Chromium + 隔离 Docker Compose 测试见 [部署指南](docs/DEPLOYMENT.md#7-可复现检查与真实验收)。
 
-GitHub Actions 已配置前端/服务/插件检查、隔离端到端、插件 ZIP 和 Windows EXE 构建；配置存在不表示远程 CI 已运行成功。真实 Windows 原生操作、用户旧数据迁移与真实 QQ 收发仍需单独验收，自动化不会调用生产机器人。
+GitHub Actions 检查前端/服务/插件/工具、隔离端到端并构建插件 ZIP 和 Windows EXE；已通过的提交与运行链接见 [计划进度记录](docs/SERVER_ASTRBOT_PLAN.md#进度记录)，后续提交以各自的 CI 结果为准。真实 Windows 原生操作、用户旧数据迁移与真实 QQ 收发仍需单独验收，自动化不会调用生产机器人。
 
 ## 早期原型
 

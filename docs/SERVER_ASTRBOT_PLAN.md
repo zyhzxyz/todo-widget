@@ -76,7 +76,7 @@
 
 | 阶段 | 产物 | 验收门槛 |
 | --- | --- | --- |
-| P0 基础修复 | 已提交 main；Linux 回归、Windows CI | 15 项现有测试、构建；真实 Windows 行为待验 |
+| P0 基础修复 | 已提交/推送 main；Linux 回归、Windows CI 通过 | 15 项现有测试、构建；真实 Windows 行为待验 |
 | P1 计划 | 本文件、独立分支 | 约束、迁移、权限、容器路径和验收明确 |
 | P2 服务核心 | schema、SQLite、认证 API、导入/备份、提醒队列 | 持久化重启、原子性、409、幂等、跨时区、权限、重试/租约自动测试 |
 | P3 桌面接入 | 数据层、连接界面、缓存只读、导入导出、每日目标入口 | 本地回归、离线/冲突/响应丢失、迁移不覆盖旧数据、前端构建 |
@@ -114,4 +114,6 @@
 
 - 2026-09-13：P6 推送完成。用户已完成 GitHub 授权；已核对远端 `main` 的基础修复 `faa4b188fed4a3d1a1fdbb766773cee7882ae312` 和 `feature/server-astrbot` 的功能实现 `d1107c4bf2c7b771652fbada4b04f4d7ed03b595`。未合并功能分支，未改其他仓库的 Git 身份或全局凭据助手。
 
-- P6 待完成：远程 CI/Windows EXE 构建正在核验，尚不能宣称成功。尚未部署生产 API/插件、绑定真实 QQ、发送真实消息或导入 Windows 旧数据；以上需用户授权、配置与真机验收。
+- 2026-09-13：P6 远程自动化通过。基础修复 `faa4b18` 的 [main CI](https://github.com/zyhzxyz/todo-widget/actions/runs/34738731011) 完成前端检查与 Windows EXE 构建。功能分支首轮发现通知插件 npm/Rust 次版本不匹配，已在 `471b945383ede4fb0b47d85a241e091f1d56eedf` 对齐，并增加锁文件兼容检查与7项工具测试。该提交的 [功能分支 CI](https://github.com/zyhzxyz/todo-widget/actions/runs/34739378441) 三个任务全部通过：前端/API/插件/工具/类型与构建、Node及Docker/Chromium端到端、Windows EXE。已下载两类产物，核对来源 SHA、Windows x64 PE 格式、插件 ZIP 完整性和7个文件与 Git 提交一致；未在 Linux 上冒充运行 Windows EXE。
+
+- P6 真实验收待完成：尚未部署生产 API/插件、绑定真实 QQ、发送真实消息或导入 Windows 旧数据；以上需用户授权、配置与真机验收。GitHub 授权与推送已不再是阻塞条件，功能分支仍未合并到 main。
