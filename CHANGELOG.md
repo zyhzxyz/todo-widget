@@ -8,7 +8,7 @@
 - 增加使用真实 HTTP/SQLite、插件核心及模拟 OneBot 的端到端脚本；Docker 路径直接使用本仓库 Compose 并隔离项目/端口/数据卷，Chromium 验证原本地导出、远程每日目标与断网只读。
 - 验证丢失写入响应、QQ失败退避、完成后取消、ACK丢失后重启、在线备份、实际恢复及幂等账本；所有测试只使用合成数据，不调用真实QQ。
 - 本机前端21项、API/桌面49项、插件27项、三套类型检查、前端构建、Node和Compose/Chromium端到端全部通过；`npm audit` 为0漏洞。
-- CI 已配置以上检查、插件 ZIP 与 Windows EXE 构建；GitHub授权/推送、远程CI结果、生产部署和真实Windows/QQ验收仍待完成，不把本机模拟结果当作真机上线结果。
+- CI 已配置以上检查、插件 ZIP 与 Windows EXE 构建。GitHub 授权已完成，基础修复 `faa4b18` 已推送 `main`，功能实现 `d1107c4` 已推送 `feature/server-astrbot`；远程 CI 正在核验。生产部署和真实 Windows/QQ 验收仍待完成，不把本机模拟结果当作真机上线结果。
 
 ## 2026-09-13 — AstrBot 插件
 
