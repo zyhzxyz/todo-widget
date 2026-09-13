@@ -35,6 +35,8 @@ import { currentMonitor, getCurrentWindow, LogicalPosition } from "@tauri-apps/a
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { calendarDates, localDate, localDateTime, shiftCalendarMonth } from "./lib/dates";
+import { useClockMinute } from "./hooks/useClockMinute";
 
 type Priority = "low" | "normal" | "high" | "notify";
 
@@ -377,16 +379,11 @@ function createTodo(
 }
 
 function today() {
-  return new Date().toISOString().slice(0, 10);
+  return localDate();
 }
 
 function dateTimeLocal(date = new Date()) {
-  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60 * 1000);
-  return local.toISOString().slice(0, 16);
-}
-
-function formatDate(date: Date) {
-  return date.toISOString().slice(0, 10);
+  return localDateTime(date);
 }
 
 function monthLabel(date: Date) {
@@ -418,14 +415,15 @@ function inferLegacyListId(todo: StoredTodo) {
 }
 
 function normalizeTodos() {
-  const saved = readJson<StoredTodo[]>(TODO_STORAGE_KEY, []);
-  const source = saved.length > 0 ? saved : seedTodos;
+  // A saved empty array is intentional. Only a missing store gets demo tasks.
+  const saved = readJson<StoredTodo[] | null>(TODO_STORAGE_KEY, null);
+  const source = saved ?? seedTodos;
 
   return source
     .filter((todo) => todo?.title)
     .map((todo) => {
       const now = new Date().toISOString();
-      const updatedDate = todo.updatedAt ? todo.updatedAt.slice(0, 10) : today();
+      const updatedDate = todo.updatedAt ? localDate(new Date(todo.updatedAt)) : today();
       const completionDates =
         todo.completionDates && todo.completionDates.length > 0
           ? Array.from(new Set(todo.completionDates))
@@ -454,8 +452,8 @@ function normalizeTodos() {
         collapsed: Boolean(todo.collapsed),
         createdAt: todo.createdAt || now,
         updatedAt: todo.updatedAt || now,
-        timeEntries: (todo as any).timeEntries || [],
-        totalTimeSpent: (todo as any).totalTimeSpent || 0,
+        timeEntries: todo.timeEntries || [],
+        totalTimeSpent: todo.totalTimeSpent || 0,
       };
     });
 }
@@ -579,6 +577,7 @@ function shouldStayOpen(todo: Todo, todos: Todo[], completingIds: Set<string>) {
 
 function App() {
   const appWindow = useMemo(() => getCurrentWindow(), []);
+  const clockMinute = useClockMinute();
   const listTabsRef = useRef<HTMLDivElement>(null);
   const eyeCareActiveMsRef = useRef(0);
   const eyeCareLastTickRef = useRef(Date.now());
@@ -638,6 +637,9 @@ function App() {
   const todosRef = useRef<Todo[]>([]);
   const timingTodoIdRef = useRef<string | null>(null);
   const timerStartTimeRef = useRef<number | null>(null);
+  const timerSessionStartRef = useRef<number | null>(null);
+  const timerWindowGenerationRef = useRef(0);
+  const timerWindowClosingRef = useRef<Promise<void>>(Promise.resolve());
   const timerElapsedRef = useRef(0);
   const timerPausedRef = useRef(false);
   const timerAccumulatedTimeRef = useRef(0);
@@ -648,7 +650,7 @@ function App() {
   const completingIdSet = useMemo(() => new Set(completingIds), [completingIds]);
   const openTodos = useMemo(
     () => todos.filter((todo) => shouldStayOpen(todo, todos, completingIdSet)),
-    [completingIdSet, todos],
+    [clockMinute, completingIdSet, todos],
   );
   const completedEvents = useMemo(() => getCompletionEvents(todos, lists), [lists, todos]);
   const openCount = openTodos.length;
@@ -673,8 +675,9 @@ function App() {
   }, [standaloneDiaryEntries]);
 
   useEffect(() => {
-    appWindow.setAlwaysOnTop(settings.alwaysOnTop).catch(() => undefined);
-  }, [appWindow, settings.alwaysOnTop]);
+    // One owner for the native flag: dismissing a reminder restores the preference.
+    appWindow.setAlwaysOnTop(settings.alwaysOnTop || eyeCareNotificationVisible).catch(() => undefined);
+  }, [appWindow, settings.alwaysOnTop, eyeCareNotificationVisible]);
 
   useEffect(() => {
     invoke<boolean>("get_autostart_enabled")
@@ -722,13 +725,6 @@ function App() {
       const audio = new Audio("data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBSuBzvLZiTYIGGS57OihUBELTKXh8bllHAU2jdXvzn0vBSh+zPDajzsKElyx6OyrWBUIQ5zd8sFuJAUuhM/z24k2CBhku+zooVARC0yl4fG5ZRwFNo3V7859LwUofsz");
       audio.play().catch(() => {});
 
-      import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
-        getCurrentWindow().setAlwaysOnTop(true);
-      });
-    } else {
-      import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
-        getCurrentWindow().setAlwaysOnTop(false);
-      });
     }
   }, [eyeCareNotificationVisible]);
 
@@ -829,7 +825,7 @@ function App() {
         todos: visible.filter((todo) => todo.listId === list.id),
       }))
       .filter((group) => group.todos.length > 0);
-  }, [activeIsInbox, activeList, completingIdSet, lists, query, settings.activeListId, settings.showCompleted, todos]);
+  }, [clockMinute, activeIsInbox, activeList, completingIdSet, lists, query, settings.activeListId, settings.showCompleted, todos]);
 
   const completedTodos = useMemo(() => {
     const lowerQuery = query.trim().toLowerCase();
@@ -1398,11 +1394,7 @@ function App() {
   }
 
   function changeCalendarMonth(offset: number) {
-    setCalendarMonth((current) => {
-      const newDate = new Date(current);
-      newDate.setMonth(newDate.getMonth() + offset);
-      return newDate;
-    });
+    setCalendarMonth((current) => shiftCalendarMonth(current, offset));
     setSelectedDate(null);
   }
 
@@ -1540,11 +1532,16 @@ function App() {
   }
 
   async function startTimer(todoId: string) {
-    console.log("Starting timer for todo:", todoId);
+    if (!todosRef.current.some((todo) => todo.id === todoId)) return;
+    if (timingTodoIdRef.current === todoId) return;
+    // Commit the previous session before replacing its refs or native window.
+    stopTimer();
+    const generation = ++timerWindowGenerationRef.current;
     const startedAt = Date.now();
 
     timingTodoIdRef.current = todoId;
     timerStartTimeRef.current = startedAt;
+    timerSessionStartRef.current = startedAt;
     timerElapsedRef.current = 0;
     timerPausedRef.current = false;
     timerAccumulatedTimeRef.current = 0;
@@ -1558,12 +1555,16 @@ function App() {
     setTodoMenu(null);
 
     try {
+      await timerWindowClosingRef.current;
+      if (generation !== timerWindowGenerationRef.current) return;
       const existingTimerWindow = await WebviewWindow.getByLabel("timer").catch(() => null);
+      if (generation !== timerWindowGenerationRef.current) return;
       if (existingTimerWindow) {
         await existingTimerWindow.close().catch(() => undefined);
       }
 
       const monitor = await currentMonitor();
+      if (generation !== timerWindowGenerationRef.current) return;
       const timerWidth = 280;
       const timerHeight = 100;
       const scaleFactor = monitor?.scaleFactor || window.devicePixelRatio || 1;
@@ -1598,12 +1599,15 @@ function App() {
       timerWindowRef.current = timerWindow;
 
       timerWindow.once("tauri://created", () => {
+        if (generation !== timerWindowGenerationRef.current) return;
         console.log("Timer window created successfully");
         timerWindow
           .setPosition(new LogicalPosition(x, y))
           .then(() => timerWindow.show())
           .catch(() => timerWindow.show().catch(() => undefined));
-        window.setTimeout(() => emitTimerUpdate(todoId, 0, false), 100);
+        window.setTimeout(() => {
+          if (generation === timerWindowGenerationRef.current) emitTimerUpdate();
+        }, 100);
       });
 
       timerWindow.once("tauri://error", (event) => {
@@ -1657,13 +1661,15 @@ function App() {
   }
 
   function resetTimerSession() {
+    ++timerWindowGenerationRef.current;
     if (timerWindowRef.current) {
-      timerWindowRef.current.close();
+      timerWindowClosingRef.current = timerWindowRef.current.close().catch(() => undefined);
       timerWindowRef.current = null;
     }
 
     timingTodoIdRef.current = null;
     timerStartTimeRef.current = null;
+    timerSessionStartRef.current = null;
     timerElapsedRef.current = 0;
     timerPausedRef.current = false;
     timerAccumulatedTimeRef.current = 0;
@@ -1683,7 +1689,7 @@ function App() {
 
     const duration = getCurrentTimerDuration();
     const entry: TimeEntry = {
-      startTime: new Date(startTime).toISOString(),
+      startTime: new Date(timerSessionStartRef.current ?? startTime).toISOString(),
       endTime: new Date().toISOString(),
       duration,
     };
@@ -2782,11 +2788,7 @@ function getCompletionEvents(todos: Todo[], lists: TodoList[]): CompletionEvent[
 }
 
 function getHeatmapDays(events: CompletionEvent[], month: Date) {
-  const firstDay = new Date(month.getFullYear(), month.getMonth(), 1);
-  const lastDay = new Date(month.getFullYear(), month.getMonth() + 1, 0);
-  const dates = Array.from({ length: lastDay.getDate() }, (_, index) =>
-    formatDate(new Date(firstDay.getFullYear(), firstDay.getMonth(), index + 1)),
-  );
+  const dates = calendarDates(month);
 
   return dates.map((date) => {
     const dayEvents = events.filter((event) => event.date === date);
@@ -2828,7 +2830,7 @@ function getTimeDistribution(todos: Todo[], date: string): TimeDistribution[] {
     const timeOnDate = todo.timeEntries
       .filter((entry) => {
         // 检查时间条目是否在指定日期
-        const entryDate = entry.startTime.slice(0, 10);
+        const entryDate = localDate(new Date(entry.startTime));
         return entryDate === date;
       })
       .reduce((sum, entry) => sum + entry.duration, 0);
