@@ -19,6 +19,16 @@ jobs:
       - run: npm run typecheck:server
       - run: npm run typecheck:tests
       - run: npm run build
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm run test:plugin
+      - run: npm run package:plugin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: astrbot-plugin-todo-widget
+          path: artifacts/astrbot_plugin_todo_widget.zip
+          if-no-files-found: error
   windows:
     runs-on: windows-latest
     steps:

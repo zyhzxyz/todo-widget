@@ -1,0 +1,9 @@
+{
+  "enabled": {"description": "启用（配置白名单与独立 bot token 后再开启）", "type": "bool", "default": false},
+  "server_url": {"description": "API 地址，不带 /api 路径。host 网络用 http://127.0.0.1:3210", "type": "string", "default": "http://127.0.0.1:3210"},
+  "bot_token": {"description": "独立 bot token，至少32字符；不要使用桌面 app token", "type": "string", "default": "", "obvious_hint": true},
+  "allowed_qq_ids": {"description": "允许的 QQ 号（字符串列表），为空则拒绝所有人", "type": "list", "default": []},
+  "allowed_platform_ids": {"description": "允许的平台实例 ID（不是类型名称 aiocqhttp），为空则拒绝", "type": "list", "default": []},
+  "poll_seconds": {"description": "提醒队列轮询间隔（5–60秒）", "type": "int", "default": 15},
+  "allow_internal_http": {"description": "仅当 Docker bridge 内使用 http://todo-api:3210 时开启；公网禁止 HTTP", "type": "bool", "default": false}
+}

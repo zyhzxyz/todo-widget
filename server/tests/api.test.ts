@@ -241,3 +241,23 @@ describe('bot commands and reminders', () => {
     expect(() => wallToInstant('2026-11-01T01:30', 'America/New_York')).toThrow();
   });
 });
+
+it('ACK requires a nonzero OneBot message ID', async () => {
+  await put(task({ reminderAt: new Date(now).toISOString() })); bind();
+  const job = store.claim()[0];
+  for (const messageId of ['0', '-0', '000']) {
+    const response = await app.inject({ method: 'POST', url: `/api/v1/bot/reminders/${job.id}/ack`, headers: headers(true), payload: { leaseToken: job.leaseToken, messageId } });
+    expect(response.statusCode).toBe(422);
+  }
+  expect(store.reminderStats().sent ?? 0).toBe(0);
+});
+it('only one reminder mode can be set, and changing mode clears the other', async () => {
+  const todo = task({ goalStartDate: '2026-09-13', goalEndDate: '2026-10-13', reminderTime: '20:30' });
+  await put(todo);
+  expect((await put({ ...todo, reminderAt: new Date(now).toISOString() })).statusCode).toBe(422);
+  expect((await botAction({ action: 'remind', taskId: todo.id, reminderTime: '20:00', reminderAt: new Date(now).toISOString() })).statusCode).toBe(422);
+  expect((await botAction({ action: 'remind', taskId: todo.id, reminderAt: new Date(now).toISOString() })).statusCode).toBe(200);
+  expect(store.snapshot().todos[0].reminderTime).toBeUndefined();
+  expect((await botAction({ action: 'remind', taskId: todo.id, reminderTime: '21:00' })).statusCode).toBe(200);
+  expect(store.snapshot().todos[0].reminderAt).toBeUndefined();
+});

@@ -10,7 +10,7 @@ export const digest = (value: unknown) => createHash('sha256').update(JSON.strin
 type MutationRecord = { actor: string; hash: string; revision: number; result: string };
 type MutationResult = { snapshot: Snapshot; committedRevision: number; replayed: boolean; result: Record<string, unknown> };
 export type Binding = { senderId: string; platformId: string; session: string; version: number };
-export type ClaimedReminder = { id: string; leaseToken: string; scheduledAt: string; todoId: string; title: string; binding: Binding; attempts: number };
+export type ClaimedReminder = { id: string; leaseToken: string; scheduledAt: string; timeZone: string; todoId: string; title: string; binding: Binding; attempts: number };
 type ReminderRow = { id: string; todo_id: string; scheduled_at: number; status: string; lease_token: string | null; lease_until: number | null; attempts: number; binding_version: number | null };
 const HOUR = 3_600_000;
 const MAX_ATTEMPTS = 8;
@@ -188,7 +188,7 @@ export class Store {
       return rows.map(row => {
         const leaseToken = randomUUID();
         this.db.prepare("UPDATE reminders SET status='leased', lease_token=?, lease_until=?, attempts=attempts+1, binding_version=? WHERE id=?").run(leaseToken, now + 120_000, binding.version, row.id);
-        return { id: row.id, leaseToken, scheduledAt: new Date(row.scheduled_at).toISOString(), todoId: row.todo_id, title: todos.get(row.todo_id)!.title, binding, attempts: row.attempts + 1 };
+        return { id: row.id, leaseToken, scheduledAt: new Date(row.scheduled_at).toISOString(), timeZone: this.timeZone, todoId: row.todo_id, title: todos.get(row.todo_id)!.title, binding, attempts: row.attempts + 1 };
       });
     });
   }

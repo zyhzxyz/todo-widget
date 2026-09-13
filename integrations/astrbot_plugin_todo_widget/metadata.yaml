@@ -1,0 +1,7 @@
+name: astrbot_plugin_todo_widget
+display_name: Todo Widget 私有待办
+desc: 独立服务器任务、每日目标与可靠 QQ 提醒；默认禁用，仅白名单私聊。
+author: zyhzxyz
+version: v0.1.0
+repo: https://github.com/zyhzxyz/todo-widget
+astrbot_version: ">=4.0.0"

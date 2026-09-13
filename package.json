@@ -19,7 +19,9 @@
     "server:backup": "node server/src/backup.ts",
     "typecheck:server": "npm run typecheck --workspace @todo-widget/server",
     "test:server": "vitest run --config server/vitest.config.ts",
-    "typecheck:tests": "tsc -p tsconfig.tests.json"
+    "typecheck:tests": "tsc -p tsconfig.tests.json",
+    "test:plugin": "python3 -m unittest discover -s tests/plugin -v",
+    "package:plugin": "python3 tools/package_astrbot.py"
   },
   "dependencies": {
     "@js-temporal/polyfill": "^0.5.1",

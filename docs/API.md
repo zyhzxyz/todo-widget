@@ -69,3 +69,7 @@ worker 的 claim 即驱动调度，不靠 LLM 或纯内存定时任务；没有 
 
 使用 SQLite 在线备份 API，包含已提交 WAL，并检查 integrity；目标必须不存在。
 不要复制运行中 `.db` 单文件，也不要用 Syncthing 同步活跃 DB/WAL。
+
+## 插件实现
+
+见 [AstrBot 插件说明](../integrations/astrbot_plugin_todo_widget/README.md)。claim 返回的每个 job 同时包含 `timeZone`；ACK 的 `messageId` 必须是非零十进制整数字符串。一次性 `reminderAt` 与每日 `reminderTime` 互斥，bot 修改模式会清除旧模式。
