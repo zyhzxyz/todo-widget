@@ -3,3 +3,21 @@ node_modules/
 dist/
 src-tauri/target/
 .claude/
+
+# Credentials, personal data and runtime artifacts must never be committed.
+.env
+.env.*
+!.env.example
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+backups/
+server/data/
+*.backup.json
+__pycache__/
+*.pyc
+.venv/
