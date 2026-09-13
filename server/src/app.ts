@@ -22,7 +22,7 @@ const createTaskSchema = z.object({
 const botActionSchema = z.discriminatedUnion('action', [
   z.object({ ...envelope, action: z.literal('create'), task: createTaskSchema }).strict(),
   z.object({ ...envelope, action: z.literal('complete'), taskId: idSchema, completed: z.boolean(), date: dateSchema.optional() }).strict(),
-  z.object({ ...envelope, action: z.literal('remind'), taskId: idSchema, reminderAt: instantSchema.nullable().optional(), reminderTime: timeOfDaySchema.nullable().optional() }).strict().refine(v => v.reminderAt !== undefined || v.reminderTime !== undefined, 'Specify reminderAt or reminderTime'),
+  z.object({ ...envelope, action: z.literal('remind'), taskId: idSchema, reminderAt: instantSchema.nullable().optional(), reminderTime: timeOfDaySchema.nullable().optional() }).strict().refine(v => v.reminderAt !== undefined || v.reminderTime !== undefined, 'Specify reminderAt or reminderTime').refine(v => !(v.reminderAt && v.reminderTime), 'Choose one reminder mode'),
 ]);
 const leaseParams = z.object({ id: z.string().regex(/^[a-f0-9]{40}$/) });
 const leaseBody = z.object({ leaseToken: z.string().uuid() }).strict();
@@ -120,7 +120,11 @@ export async function buildApp(config: ServerConfig, options: { store?: Store; l
           }
         } else {
           if (body.reminderAt !== undefined) { todo.reminderAt = body.reminderAt ?? undefined; todo.notifyAt = undefined; todo.notifyDate = undefined; }
-          if (body.reminderTime !== undefined) todo.reminderTime = body.reminderTime ?? undefined;
+          if (body.reminderTime !== undefined) {
+            todo.reminderTime = body.reminderTime ?? undefined;
+            if (body.reminderTime) { todo.reminderAt = undefined; todo.notifyAt = undefined; todo.notifyDate = undefined; }
+          }
+          if (body.reminderAt) todo.reminderTime = undefined;
         }
         todo.updatedAt = now;
       }
@@ -144,7 +148,7 @@ export async function buildApp(config: ServerConfig, options: { store?: Store; l
   });
   app.post('/api/v1/bot/reminders/:id/ack', async request => {
     const { id } = leaseParams.parse(request.params);
-    const body = leaseBody.extend({ messageId: z.string().regex(/^-?\d{1,30}$/) }).parse(request.body);
+    const body = leaseBody.extend({ messageId: z.string().regex(/^-?\d{1,30}$/).refine(value => BigInt(value) !== 0n, 'A nonzero OneBot message ID is required') }).parse(request.body);
     return store.settle(id, body.leaseToken, body.messageId);
   });
   app.post('/api/v1/bot/reminders/:id/nack', async request => {

@@ -17,6 +17,7 @@ jobs:
       - run: npm test
       - run: npm run test:server
       - run: npm run typecheck:server
+      - run: npm run typecheck:tests
       - run: npm run build
   windows:
     runs-on: windows-latest

@@ -18,11 +18,14 @@
     "server:dev": "npm run dev --workspace @todo-widget/server",
     "server:backup": "node server/src/backup.ts",
     "typecheck:server": "npm run typecheck --workspace @todo-widget/server",
-    "test:server": "vitest run --config server/vitest.config.ts"
+    "test:server": "vitest run --config server/vitest.config.ts",
+    "typecheck:tests": "tsc -p tsconfig.tests.json"
   },
   "dependencies": {
     "@js-temporal/polyfill": "^0.5.1",
     "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-dialog": "^2.7.3",
+    "@tauri-apps/plugin-fs": "^2.5.2",
     "@tauri-apps/plugin-notification": "^2.3.3",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",

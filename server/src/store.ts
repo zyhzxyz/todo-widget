@@ -25,9 +25,10 @@ export class Store {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(path);
     if (path !== ':memory:') chmodSync(path, 0o600);
+    try {
     this.db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
     const version = (this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
-    if (version > 1) { this.db.close(); throw new Error('Database is newer than this server; refusing to downgrade'); }
+    if (version > 1) throw new Error('Database is newer than this server; refusing to downgrade');
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS lists (id TEXT PRIMARY KEY, json TEXT NOT NULL, position INTEGER NOT NULL);
@@ -53,6 +54,7 @@ export class Store {
       if (savedZone !== this.timeZone) throw new Error(`Database timezone is ${savedZone}; refusing an implicit calendar migration`);
       if (!this.db.prepare('SELECT id FROM lists LIMIT 1').get()) this.writeBusiness(emptyBusiness(new Date(this.now()).toISOString()));
     });
+    } catch (error) { this.db.close(); throw error; }
   }
   close() { this.db.close(); }
   transaction<T>(fn: () => T): T {

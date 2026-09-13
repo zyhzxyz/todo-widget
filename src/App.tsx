@@ -1,4 +1,4 @@
-﻿import {
+import {
   Archive,
   BarChart3,
   BookOpen,
@@ -22,6 +22,7 @@
 } from "lucide-react";
 import {
   type CSSProperties,
+  type SetStateAction,
   type DragEvent,
   type FormEvent,
   type MouseEvent,
@@ -31,51 +32,18 @@ import {
   useRef,
   useState,
 } from "react";
-import { currentMonitor, getCurrentWindow, LogicalPosition } from "@tauri-apps/api/window";
+import { currentMonitor, LogicalPosition } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { calendarDates, localDate, localDateTime, shiftCalendarMonth } from "./lib/dates";
+import { calendarDates, localDate, shiftCalendarMonth } from "./lib/dates";
+import { businessDate, businessDateTime, setBusinessTimeZone } from "./lib/businessClock";
+import { wallToInstant } from "../shared/time";
+import type { BusinessData, Todo, TodoList, DiaryEntry, TimeEntry, Priority } from "../shared/domain";
+import { mainWindow } from "./lib/native";
+import { useBusinessData } from "./hooks/useBusinessData";
+import { DataSettings, DataStatusBanner } from "./components/DataSettings";
 import { useClockMinute } from "./hooks/useClockMinute";
-
-type Priority = "low" | "normal" | "high" | "notify";
-
-type TimeEntry = {
-  startTime: string;
-  endTime?: string;
-  duration: number; // 秒数
-};
-
-type Todo = {
-  id: string;
-  title: string;
-  completed: boolean;
-  priority: Priority;
-  listId: string;
-  dueDate?: string;
-  notifyDate?: string;
-  notifyAt?: string;
-  startDate?: string;
-  endDate?: string;
-  goalStartDate?: string;
-  goalEndDate?: string;
-  completionDates: string[];
-  notes?: string;
-  completionNotes?: string;
-  isGroup: boolean;
-  parentId?: string;
-  collapsed: boolean;
-  createdAt: string;
-  updatedAt: string;
-  timeEntries: TimeEntry[];
-  totalTimeSpent: number; // 总计时间（秒）
-};
-
-type TodoList = {
-  id: string;
-  name: string;
-  createdAt: string;
-};
 
 type WidgetSettings = {
   alwaysOnTop: boolean;
@@ -122,14 +90,6 @@ type CompletionEvent = {
   listName: string;
 };
 
-type DiaryEntry = {
-  id: string;
-  date: string;
-  content: string;
-  createdAt: string;
-  updatedAt: string;
-};
-
 type ListMenu = {
   listId: string;
   x: number;
@@ -142,7 +102,7 @@ type TodoMenu = {
   y: number;
 } | null;
 
-type CreationMode = "task" | "notification" | "group";
+type CreationMode = "task" | "notification" | "group" | "goal";
 
 type CreationMenu = {
   x: number;
@@ -379,11 +339,11 @@ function createTodo(
 }
 
 function today() {
-  return localDate();
+  return businessDate();
 }
 
 function dateTimeLocal(date = new Date()) {
-  return localDateTime(date);
+  return businessDateTime(date);
 }
 
 function monthLabel(date: Date) {
@@ -393,15 +353,17 @@ function monthLabel(date: Date) {
 function readJson<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
+    return raw !== null ? (JSON.parse(raw) as T) : fallback;
   } catch {
+    if ([TODO_STORAGE_KEY, LISTS_STORAGE_KEY, DIARY_STORAGE_KEY].includes(key)) throw new Error("Invalid local business JSON; preserve the original store");
     return fallback;
   }
 }
 
 function normalizeLists() {
   const saved = readJson<TodoList[]>(LISTS_STORAGE_KEY, []);
-  const cleanSaved = saved.filter((list) => list?.id && list?.name);
+  if (!Array.isArray(saved) || saved.some(list => !list || typeof list.id !== "string" || typeof list.name !== "string")) throw new Error("Invalid local lists");
+  const cleanSaved = saved;
   const ids = new Set(cleanSaved.map((list) => list.id));
   const missingDefaults = defaultLists.filter((list) => !ids.has(list.id));
   return [...missingDefaults, ...cleanSaved];
@@ -417,7 +379,8 @@ function inferLegacyListId(todo: StoredTodo) {
 function normalizeTodos() {
   // A saved empty array is intentional. Only a missing store gets demo tasks.
   const saved = readJson<StoredTodo[] | null>(TODO_STORAGE_KEY, null);
-  const source = saved ?? seedTodos;
+  const source = localStorage.getItem(TODO_STORAGE_KEY) === null ? seedTodos : saved;
+  if (!Array.isArray(source) || source.some(todo => !todo || typeof todo.title !== "string" || !todo.title.trim() || (todo.completionDates !== undefined && !Array.isArray(todo.completionDates)) || (todo.timeEntries !== undefined && !Array.isArray(todo.timeEntries)))) throw new Error("Invalid local tasks");
 
   return source
     .filter((todo) => todo?.title)
@@ -440,6 +403,8 @@ function normalizeTodos() {
         dueDate: todo.dueDate,
         notifyDate: todo.notifyDate,
         notifyAt: todo.notifyAt,
+        reminderAt: todo.reminderAt,
+        reminderTime: todo.reminderTime,
         startDate: todo.startDate,
         endDate: todo.endDate,
         goalStartDate: todo.goalStartDate,
@@ -459,10 +424,11 @@ function normalizeTodos() {
 }
 
 function normalizeSettings(lists: TodoList[]) {
-  const saved = readJson<Partial<WidgetSettings> & { filter?: string }>(
+  const rawSaved = readJson<Partial<WidgetSettings> & { filter?: string }>(
     SETTINGS_STORAGE_KEY,
     defaultSettings,
   );
+  const saved: Partial<WidgetSettings> & { filter?: string } = rawSaved && typeof rawSaved === "object" && !Array.isArray(rawSaved) ? rawSaved : defaultSettings;
   const firstListId = lists[0]?.id || DEFAULT_INBOX_ID;
   const migratedActiveList =
     saved.activeListId ||
@@ -575,24 +541,33 @@ function shouldStayOpen(todo: Todo, todos: Todo[], completingIds: Set<string>) {
   return getOpenChildTodos(todo.id, todos, completingIds).length > 0 || completingIds.has(todo.id);
 }
 
+function loadLocalBusiness(): BusinessData {
+  const diary = readJson<DiaryEntry[]>(DIARY_STORAGE_KEY, []);
+  if (!Array.isArray(diary) || diary.some(entry => !entry || typeof entry.id !== "string" || typeof entry.date !== "string" || typeof entry.content !== "string")) throw new Error("Invalid local diary");
+  return { lists: normalizeLists(), todos: normalizeTodos(), diary };
+}
+
 function App() {
-  const appWindow = useMemo(() => getCurrentWindow(), []);
+  const appWindow = useMemo(mainWindow, []);
   const clockMinute = useClockMinute();
   const listTabsRef = useRef<HTMLDivElement>(null);
   const eyeCareActiveMsRef = useRef(0);
   const eyeCareLastTickRef = useRef(Date.now());
-  const [lists, setLists] = useState<TodoList[]>(normalizeLists);
-  const [todos, setTodos] = useState<Todo[]>(normalizeTodos);
-  const [standaloneDiaryEntries, setStandaloneDiaryEntries] = useState<DiaryEntry[]>(() =>
-    readJson<DiaryEntry[]>(DIARY_STORAGE_KEY, [])
-  );
-  const [settings, setSettings] = useState<WidgetSettings>(() => normalizeSettings(normalizeLists()));
+  const { store: dataStore, view: dataView } = useBusinessData(loadLocalBusiness);
+  setBusinessTimeZone(dataView.timeZone);
+  const { lists, todos, diary: standaloneDiaryEntries } = dataView.data;
+  const setTodos = (update: SetStateAction<Todo[]>) => dataStore.set("todos", update);
+  const setLists = (update: SetStateAction<TodoList[]>) => dataStore.set("lists", update);
+  const setStandaloneDiaryEntries = (update: SetStateAction<DiaryEntry[]>) => dataStore.set("diary", update);
+  const [settings, setSettings] = useState<WidgetSettings>(() => normalizeSettings(lists));
   const [draft, setDraft] = useState("");
   const [priority, setPriority] = useState<Priority>("normal");
   const [taskStart, setTaskStart] = useState("");
   const [taskEnd, setTaskEnd] = useState("");
   const [notifyAt, setNotifyAt] = useState(dateTimeLocal());
   const [useTaskTime, setUseTaskTime] = useState(false);
+  const [useReminder, setUseReminder] = useState(false);
+  const [dailyReminderTime, setDailyReminderTime] = useState("");
   const [creationMode, setCreationMode] = useState<CreationMode | null>(null);
   const [creationMenu, setCreationMenu] = useState<CreationMenu>(null);
   const [query, setQuery] = useState("");
@@ -607,6 +582,8 @@ function App() {
   const [editingNotesId, setEditingNotesId] = useState<string | null>(null);
   const [notesDraft, setNotesDraft] = useState("");
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [editReminder, setEditReminder] = useState("");
+  const [editDailyReminder, setEditDailyReminder] = useState("");
   const [editTaskPriority, setEditTaskPriority] = useState<Priority>("normal");
   const [editTaskStart, setEditTaskStart] = useState(today());
   const [editTaskEnd, setEditTaskEnd] = useState(today());
@@ -638,6 +615,7 @@ function App() {
   const timingTodoIdRef = useRef<string | null>(null);
   const timerStartTimeRef = useRef<number | null>(null);
   const timerSessionStartRef = useRef<number | null>(null);
+  const timerEntryIdRef = useRef<string | null>(null);
   const timerWindowGenerationRef = useRef(0);
   const timerWindowClosingRef = useRef<Promise<void>>(Promise.resolve());
   const timerElapsedRef = useRef(0);
@@ -645,6 +623,12 @@ function App() {
   const timerAccumulatedTimeRef = useRef(0);
 
   todosRef.current = todos;
+
+  useEffect(() => {
+    if (!lists.some(list => list.id === settings.activeListId)) {
+      setSettings(current => ({ ...current, activeListId: DEFAULT_INBOX_ID }));
+    }
+  }, [lists, settings.activeListId]);
 
   const activeList = lists.find((list) => list.id === settings.activeListId) || lists[0];
   const completingIdSet = useMemo(() => new Set(completingIds), [completingIds]);
@@ -659,20 +643,8 @@ function App() {
   const tint = tintPresets.find((preset) => preset.id === settings.tint) || tintPresets[0];
 
   useEffect(() => {
-    localStorage.setItem(TODO_STORAGE_KEY, JSON.stringify(todos));
-  }, [todos]);
-
-  useEffect(() => {
-    localStorage.setItem(LISTS_STORAGE_KEY, JSON.stringify(lists));
-  }, [lists]);
-
-  useEffect(() => {
     localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
   }, [settings]);
-
-  useEffect(() => {
-    localStorage.setItem(DIARY_STORAGE_KEY, JSON.stringify(standaloneDiaryEntries));
-  }, [standaloneDiaryEntries]);
 
   useEffect(() => {
     // One owner for the native flag: dismissing a reminder restores the preference.
@@ -729,13 +701,14 @@ function App() {
   }, [eyeCareNotificationVisible]);
 
   useEffect(() => {
+    if (!appWindow.native) return;
     let unlistenPause: (() => void) | undefined;
     let unlistenStop: (() => void) | undefined;
     let unlistenReady: (() => void) | undefined;
     let disposed = false;
 
     listen("timer-pause-toggle", () => {
-      if (timerPausedRef.current) {
+      if (timerPausedRef.current && dataStore.canWrite) {
         resumeTimer();
       } else {
         pauseTimer();
@@ -786,6 +759,7 @@ function App() {
         const elapsed = timerAccumulatedTimeRef.current + Math.floor((Date.now() - startTime) / 1000);
         timerElapsedRef.current = elapsed;
         setTimerElapsed(elapsed);
+        if (elapsed % 5 === 0) checkpointTimer();
 
         emitTimerUpdate(timingTodoIdRef.current, elapsed, false);
       }
@@ -793,6 +767,17 @@ function App() {
 
     return () => window.clearInterval(timer);
   }, [timingTodoId, timerStartTime]);
+
+  // Persist an interrupted session locally without uploading live timer ticks.
+  useEffect(() => {
+    const checkpoint = () => checkpointTimer();
+    window.addEventListener("beforeunload", checkpoint);
+    document.addEventListener("visibilitychange", checkpoint);
+    return () => {
+      window.removeEventListener("beforeunload", checkpoint);
+      document.removeEventListener("visibilitychange", checkpoint);
+    };
+  }, []);
 
   const visibleGroups = useMemo(() => {
     if (settings.showCompleted) return [];
@@ -877,14 +862,17 @@ function App() {
   function resetCreationForm(mode: CreationMode) {
     setDraft("");
     setPriority(mode === "notification" ? "notify" : "normal");
-    setTaskStart("");
-    setTaskEnd("");
+    setTaskStart(mode === "goal" ? today() : "");
+    setTaskEnd(mode === "goal" ? today() : "");
+    setUseReminder(false);
+    setDailyReminderTime("");
     setNotifyAt(dateTimeLocal());
     setUseTaskTime(false);
     setCreationNotes("");
   }
 
   function beginCreation(mode: CreationMode) {
+    if (!dataStore.canWrite) return;
     resetCreationForm(mode);
     setCreationMode(mode);
     setCreationMenu(null);
@@ -901,6 +889,7 @@ function App() {
 
   function submitCreation(event: FormEvent) {
     event.preventDefault();
+    if (!dataStore.canWrite) return;
     const title = draft.trim();
     if (!title || !creationMode || settings.showCompleted || !activeList) return;
 
@@ -910,6 +899,20 @@ function App() {
     const normalizedEnd = start && end && start > end ? start : end;
     const targetListId = activeIsInbox ? DEFAULT_INBOX_ID : activeList.id;
     const notes = creationNotes.trim() || undefined;
+
+    if (creationMode === "goal") {
+      if (!taskStart || !taskEnd || taskStart > taskEnd) { alert("请填写有效的目标起止日期。"); return; }
+      const goal = createTodo(title, priority, targetListId, undefined, false, taskStart, taskEnd, notes);
+      goal.reminderTime = dailyReminderTime || undefined;
+      setTodos(current => [goal, ...current]);
+      closeCreationModal();
+      return;
+    }
+    let reminderAt: string | undefined;
+    if (creationMode === "task" && useReminder) {
+      try { reminderAt = wallToInstant(notifyAt, dataView.timeZone); }
+      catch { alert("提醒时间无效或处于夏令时歧义时段，请重新选择。"); return; }
+    }
 
     if (creationMode === "group") {
       // 只创建任务集，不创建子任务
@@ -960,7 +963,7 @@ function App() {
     }
 
     setTodos((current) => [
-      createTodo(
+      { ...createTodo(
         title,
         priority,
         targetListId,
@@ -974,13 +977,14 @@ function App() {
         undefined,
         normalizedStart,
         normalizedEnd,
-      ),
+      ), reminderAt },
       ...current,
     ]);
     closeCreationModal();
   }
 
   function addList() {
+    if (!dataStore.canWrite) return;
     const id = `list-${crypto.randomUUID()}`;
     const newList = createList(id, `${text.newList} ${lists.length + 1}`);
 
@@ -993,6 +997,7 @@ function App() {
   }
 
   function startRename(listId = activeList?.id) {
+    if (!dataStore.canWrite) return;
     const target = lists.find((list) => list.id === listId);
     if (!target || settings.showCompleted) return;
     setRenamingListId(target.id);
@@ -1001,6 +1006,7 @@ function App() {
   }
 
   function deleteList(listId: string) {
+    if (!dataStore.canWrite) return;
     if (!canDeleteList(listId)) return;
 
     setLists((current) => current.filter((list) => list.id !== listId));
@@ -1018,6 +1024,7 @@ function App() {
   }
 
   function commitRename() {
+    if (!dataStore.canWrite) return;
     if (!renamingListId) return;
     const name = renameDraft.trim();
 
@@ -1048,6 +1055,7 @@ function App() {
   }
 
   function completeTodo(id: string) {
+    if (!dataStore.canWrite) return;
     if (completingIds.includes(id)) return;
 
     const todo = todos.find((item) => item.id === id);
@@ -1089,65 +1097,69 @@ function App() {
   }
 
   function confirmCompletion() {
+    if (!dataStore.canWrite) return;
     if (!completingTodoId) return;
     const id = completingTodoId;
     const completionNotes = completionNotesDraft.trim() || undefined;
     const finalTimeSpent = editingTimeSpent !== null ? editingTimeSpent : undefined;
     const timerSession = timingTodoIdRef.current === id ? finishTimerSession() : null;
+    if (timingTodoIdRef.current === id) return; // Recovery journal failed; keep the live timer.
 
     setCompletingIds((current) => [...current, id]);
     setCompletingTodoId(null);
     setCompletionNotesDraft("");
     setEditingTimeSpent(null);
 
-    window.setTimeout(() => {
-      setTodos((current) => {
-        const target = current.find((item) => item.id === id);
-        const updated = current.map((item) => {
-          if (item.id !== id) return item;
+    setTodos((current) => {
+      const target = current.find((item) => item.id === id);
+      const updated = current.map((item) => {
+        if (item.id !== id) return item;
 
-          const completionDates = Array.from(new Set([...item.completionDates, today()]));
-          const timerEntry =
-            timerSession?.todoId === id && timerSession.duration > 0 && finalTimeSpent === undefined
-              ? timerSession.entry
-              : null;
-          return {
-            ...item,
-            completed: isGoal(item) ? item.completed : true,
-            completionDates,
-            completionNotes,
-            timeEntries: timerEntry ? [...item.timeEntries, timerEntry] : item.timeEntries,
-            totalTimeSpent:
-              finalTimeSpent !== undefined
-                ? finalTimeSpent
-                : item.totalTimeSpent + (timerEntry?.duration ?? 0),
-            updatedAt: new Date().toISOString(),
-          };
-        });
-
-        if (!target?.parentId) return updated;
-
-        const parent = updated.find((item) => item.id === target.parentId);
-        if (!parent?.isGroup || getOpenChildTodos(parent.id, updated, new Set()).length > 0) {
-          return updated;
-        }
-
-        return updated.map((item) =>
-          item.id === parent.id
-            ? {
-                ...item,
-                completed: true,
-                completionDates: Array.from(new Set([...item.completionDates, today()])),
-                updatedAt: new Date().toISOString(),
-              }
-            : item,
-        );
+        const completionDates = Array.from(new Set([...item.completionDates, today()]));
+        const timerEntry =
+          timerSession?.todoId === id && timerSession.duration > 0
+            ? timerSession.entry
+            : null;
+        return {
+          ...item,
+          completed: isGoal(item) ? item.completed : true,
+          completionDates,
+          completionNotes,
+          timeEntries: timerEntry ? [...item.timeEntries, timerEntry] : item.timeEntries,
+          totalTimeSpent:
+            finalTimeSpent !== undefined
+              ? finalTimeSpent
+              : item.totalTimeSpent + (timerEntry?.duration ?? 0),
+          updatedAt: new Date().toISOString(),
+        };
       });
+
+      if (!target?.parentId) return updated;
+
+      const parent = updated.find((item) => item.id === target.parentId);
+      if (!parent?.isGroup || getOpenChildTodos(parent.id, updated, new Set()).length > 0) {
+        return updated;
+      }
+
+      return updated.map((item) =>
+        item.id === parent.id
+          ? {
+              ...item,
+              completed: true,
+              completionDates: Array.from(new Set([...item.completionDates, today()])),
+              updatedAt: new Date().toISOString(),
+            }
+          : item,
+      );
+    });
+    window.setTimeout(() => {
       setCompletingIds((current) => current.filter((itemId) => itemId !== id));
     }, COMPLETE_ANIMATION_MS);
   }
 
   function removeTodo(id: string) {
+    if (!dataStore.canWrite) return;
+    if (timingTodoIdRef.current === id) { alert("请先停止计时，再删除任务。"); return; }
     setTodos((current) =>
       current
         .filter((todo) => todo.id !== id)
@@ -1158,6 +1170,7 @@ function App() {
   }
 
   function toggleGroupCollapse(id: string) {
+    if (!dataStore.canWrite) return;
     setTodos((current) =>
       current.map((todo) =>
         todo.id === id ? { ...todo, collapsed: !todo.collapsed, updatedAt: new Date().toISOString() } : todo,
@@ -1166,6 +1179,7 @@ function App() {
   }
 
   function openQuickAddFromBlank(event: MouseEvent<HTMLElement>) {
+    if (!dataStore.canWrite) return;
     // 待办窗口不能创建任务
     if (activeIsInbox) {
       return;
@@ -1190,6 +1204,7 @@ function App() {
   }
 
   function startTodoDrag(event: DragEvent<HTMLElement>, todo: Todo) {
+    if (!dataStore.canWrite) return;
     // draggable 属性已经控制了哪些任务可以拖拽
     // 这里只需要设置拖拽数据
     event.dataTransfer.effectAllowed = "move";
@@ -1208,6 +1223,7 @@ function App() {
   }
 
   function dropTodoIntoGroup(event: DragEvent<HTMLElement>, groupId: string) {
+    if (!dataStore.canWrite) return;
     event.preventDefault();
     event.stopPropagation();
 
@@ -1279,6 +1295,7 @@ function App() {
   }
 
   function startEditNotes(todoId: string) {
+    if (!dataStore.canWrite) return;
     const todo = todos.find((item) => item.id === todoId);
     if (!todo) return;
     setEditingNotesId(todoId);
@@ -1287,19 +1304,27 @@ function App() {
   }
 
   function startEditTask(todoId: string) {
+    if (!dataStore.canWrite) return;
     const todo = todos.find((item) => item.id === todoId);
     if (!todo) return;
     setEditingTaskId(todoId);
     setEditTaskPriority(todo.priority === "notify" ? "normal" : todo.priority);
-    setEditTaskStart(todo.startDate || today());
-    setEditTaskEnd(todo.endDate || today());
+    setEditTaskStart(todo.goalStartDate || todo.startDate || "");
+    setEditTaskEnd(todo.goalEndDate || todo.endDate || "");
+    setEditReminder(todo.reminderAt ? dateTimeLocal(new Date(todo.reminderAt)) : todo.notifyAt || "");
+    setEditDailyReminder(todo.reminderTime || "");
     setTodoMenu(null);
   }
 
   function commitTaskEdit() {
+    if (!dataStore.canWrite) return;
     if (!editingTaskId) return;
-    const start = editTaskStart || today();
-    const end = editTaskEnd || start;
+    const start = editTaskStart || undefined;
+    const end = editTaskEnd || undefined;
+    const original = todos.find(todo => todo.id === editingTaskId);
+    if (original && isGoal(original) && (!start || !end || start > end || original.completionDates.some(date => date < start || date > end))) { alert("目标范围不能为空或排除已有完成记录。"); return; }
+    let reminderAt: string | undefined;
+    try { reminderAt = editReminder ? wallToInstant(editReminder, dataView.timeZone) : undefined; } catch { alert("提醒时间无效，请重新选择。"); return; }
     const normalizedStart = start && end && start > end ? end : start;
     const normalizedEnd = start && end && start > end ? start : end;
 
@@ -1309,8 +1334,14 @@ function App() {
           ? {
               ...todo,
               priority: editTaskPriority,
-              startDate: normalizedStart,
-              endDate: normalizedEnd,
+              startDate: isGoal(todo) ? todo.startDate : normalizedStart,
+              endDate: isGoal(todo) ? todo.endDate : normalizedEnd,
+              goalStartDate: isGoal(todo) ? normalizedStart : undefined,
+              goalEndDate: isGoal(todo) ? normalizedEnd : undefined,
+              reminderAt: todo.isGroup || (isGoal(todo) && editDailyReminder) ? undefined : reminderAt,
+              reminderTime: isGoal(todo) ? editDailyReminder || undefined : undefined,
+              notifyAt: undefined,
+              notifyDate: undefined,
               updatedAt: new Date().toISOString(),
             }
           : todo,
@@ -1320,11 +1351,13 @@ function App() {
   }
 
   function openAddTaskToGroup(groupId: string) {
+    if (!dataStore.canWrite) return;
     setAddTaskToGroupId(groupId);
     setTodoMenu(null);
   }
 
   function addTaskToGroup(taskId: string, groupId: string) {
+    if (!dataStore.canWrite) return;
     setTodos((current) =>
       current.map((todo) =>
         todo.id === taskId
@@ -1340,6 +1373,7 @@ function App() {
   }
 
   function removeFromGroup(taskId: string) {
+    if (!dataStore.canWrite) return;
     setTodos((current) =>
       current.map((todo) =>
         todo.id === taskId
@@ -1355,6 +1389,7 @@ function App() {
   }
 
   function startRenameTodo(todoId: string) {
+    if (!dataStore.canWrite) return;
     const todo = todos.find((item) => item.id === todoId);
     if (!todo) return;
     setRenamingTodoId(todoId);
@@ -1363,6 +1398,7 @@ function App() {
   }
 
   function commitTodoRename() {
+    if (!dataStore.canWrite) return;
     if (!renamingTodoId) return;
     const title = renameTodoDraft.trim();
 
@@ -1382,6 +1418,7 @@ function App() {
   }
 
   function commitNotes() {
+    if (!dataStore.canWrite) return;
     if (!editingNotesId) return;
     const notes = notesDraft.trim();
     setTodos((current) =>
@@ -1408,6 +1445,7 @@ function App() {
   }
 
   function saveStandaloneDiary() {
+    if (!dataStore.canWrite) return;
     if (!diaryDate) return;
     const content = standaloneDiaryDraft.trim();
 
@@ -1447,6 +1485,7 @@ function App() {
   }
 
   function startEditDiary(todoId: string) {
+    if (!dataStore.canWrite) return;
     const todo = todos.find((item) => item.id === todoId);
     if (!todo) return;
     setEditingDiaryId(todoId);
@@ -1454,6 +1493,7 @@ function App() {
   }
 
   function commitDiaryEdit() {
+    if (!dataStore.canWrite) return;
     if (!editingDiaryId) return;
     const completionNotes = diaryNotesDraft.trim() || undefined;
     setTodos((current) =>
@@ -1507,6 +1547,9 @@ function App() {
   }
 
   function closeWindow() {
+    stopTimer();
+    if (timingTodoIdRef.current) return;
+    if ((dataStore.getSnapshot().hasPending || dataStore.getSnapshot().timerRecoveryCount) && !window.confirm("存在未确认的修改或计时，已保留本机恢复记录。确定关闭？")) return;
     appWindow.close().catch(() => undefined);
   }
 
@@ -1532,16 +1575,19 @@ function App() {
   }
 
   async function startTimer(todoId: string) {
+    if (!dataStore.canWrite) return;
     if (!todosRef.current.some((todo) => todo.id === todoId)) return;
     if (timingTodoIdRef.current === todoId) return;
     // Commit the previous session before replacing its refs or native window.
     stopTimer();
+    if (timingTodoIdRef.current) return;
     const generation = ++timerWindowGenerationRef.current;
     const startedAt = Date.now();
 
     timingTodoIdRef.current = todoId;
     timerStartTimeRef.current = startedAt;
     timerSessionStartRef.current = startedAt;
+    timerEntryIdRef.current = crypto.randomUUID();
     timerElapsedRef.current = 0;
     timerPausedRef.current = false;
     timerAccumulatedTimeRef.current = 0;
@@ -1554,6 +1600,7 @@ function App() {
     setTimerAccumulatedTime(0);
     setTodoMenu(null);
 
+    if (!appWindow.native) return; // Web mode uses the compact in-page timer.
     try {
       await timerWindowClosingRef.current;
       if (generation !== timerWindowGenerationRef.current) return;
@@ -1632,12 +1679,13 @@ function App() {
       setTimerPausedAt(Date.now());
       setTimerAccumulatedTime(currentElapsed);
       setTimerElapsed(currentElapsed);
+      checkpointTimer();
       emitTimerUpdate(timingTodoIdRef.current, currentElapsed, true);
     }
   }
 
   function resumeTimer() {
-    if (timerPausedRef.current) {
+    if (timerPausedRef.current && dataStore.canWrite) {
       const resumedAt = Date.now();
 
       timerPausedRef.current = false;
@@ -1670,6 +1718,7 @@ function App() {
     timingTodoIdRef.current = null;
     timerStartTimeRef.current = null;
     timerSessionStartRef.current = null;
+    timerEntryIdRef.current = null;
     timerElapsedRef.current = 0;
     timerPausedRef.current = false;
     timerAccumulatedTimeRef.current = 0;
@@ -1682,18 +1731,28 @@ function App() {
     setTimerAccumulatedTime(0);
   }
 
+  function checkpointTimer() {
+    const todoId = timingTodoIdRef.current;
+    const start = timerSessionStartRef.current;
+    const id = timerEntryIdRef.current;
+    if (!todoId || !start || !id) return;
+    dataStore.preserveTimer(todoId, { id, startTime: new Date(start).toISOString(), endTime: new Date().toISOString(), duration: getCurrentTimerDuration() });
+  }
+
   function finishTimerSession() {
     const todoId = timingTodoIdRef.current;
     const startTime = timerStartTimeRef.current;
     if (!todoId || !startTime) return null;
 
     const duration = getCurrentTimerDuration();
-    const entry: TimeEntry = {
+    const entry: TimeEntry & { id: string } = {
+      id: timerEntryIdRef.current ?? crypto.randomUUID(),
       startTime: new Date(timerSessionStartRef.current ?? startTime).toISOString(),
       endTime: new Date().toISOString(),
       duration,
     };
 
+    if (!dataStore.preserveTimer(todoId, entry)) return null;
     resetTimerSession();
     return { todoId, duration, entry };
   }
@@ -1726,6 +1785,7 @@ function App() {
         "widget",
         settings.collapsed ? "collapsed" : "",
         searchOpen ? "searching" : "",
+        dataView.mode === "remote" || dataView.error || dataView.timerRecoveryCount ? "with-data-status" : "",
       ].join(" ")}
       style={
         {
@@ -1803,6 +1863,7 @@ function App() {
           </button>
           <button
             aria-label={settings.alwaysOnTop ? text.unpin : text.pin}
+            disabled={!appWindow.native}
             className={settings.alwaysOnTop ? "icon-button active" : "icon-button"}
             onClick={() => updateSettings({ alwaysOnTop: !settings.alwaysOnTop })}
             title={settings.alwaysOnTop ? text.unpin : text.pin}
@@ -1812,6 +1873,7 @@ function App() {
           </button>
           <button
             aria-label={settings.locked ? text.unlockPosition : text.lockPosition}
+            disabled={!appWindow.native}
             className={settings.locked ? "icon-button active" : "icon-button"}
             onClick={() => updateSettings({ locked: !settings.locked })}
             title={settings.locked ? text.unlockPosition : text.lockPosition}
@@ -1830,6 +1892,7 @@ function App() {
           </button>
           <button
             aria-label={text.minimize}
+            disabled={!appWindow.native}
             className="icon-button"
             onClick={minimizeWindow}
             title={text.minimize}
@@ -1839,6 +1902,7 @@ function App() {
           </button>
           <button
             aria-label={text.close}
+            disabled={!appWindow.native}
             className="icon-button close"
             onClick={closeWindow}
             title={text.close}
@@ -1851,6 +1915,7 @@ function App() {
 
       {!settings.collapsed && (
         <>
+          <DataStatusBanner view={dataView} onOpen={() => setSettingsOpen(true)} />
           {!settings.showCompleted && (
             <section className="list-strip" aria-label="\u6e05\u5355\u7a97\u53e3">
               <div className="list-tabs" onWheel={handleListWheel} ref={listTabsRef}>
@@ -1939,6 +2004,11 @@ function App() {
           </section>
 
           <footer>
+            {!appWindow.native && timingTodoId && <div className="browser-timer" aria-label="计时器">
+              <strong>{formatTime(timerElapsed)}</strong>
+              <button type="button" onClick={timerPaused ? resumeTimer : pauseTimer} disabled={timerPaused && !dataStore.canWrite}>{timerPaused ? "继续" : "暂停"}</button>
+              <button type="button" onClick={stopTimer}>停止并保存</button>
+            </div>}
             <span>
               {openCount} {text.open} / {completedCount} {text.finished}
             </span>
@@ -1985,6 +2055,7 @@ function App() {
               <button onClick={() => beginCreation("notification")} type="button">
                 {text.createNotification}
               </button>
+              <button onClick={() => beginCreation("goal")} type="button">创建每日目标</button>
               <button onClick={() => beginCreation("task")} type="button">
                 {text.createTask}
               </button>
@@ -2000,7 +2071,7 @@ function App() {
                       ? text.createTaskGroup
                       : creationMode === "notification"
                         ? text.createNotification
-                        : text.createTask}
+                        : creationMode === "goal" ? "创建每日目标" : text.createTask}
                   </span>
                   <button onClick={closeCreationModal} type="button">
                     <X size={14} />
@@ -2038,7 +2109,7 @@ function App() {
                   </label>
                 )}
 
-                {creationMode !== "notification" && creationMode !== "group" && (
+                {creationMode === "task" && (
                   <>
                     <div className="dual-fields">
                       <label className="setting-check">
@@ -2064,6 +2135,20 @@ function App() {
                     )}
                   </>
                 )}
+
+                {creationMode === "goal" && <>
+                  <div className="dual-fields">
+                    <label className="form-field"><span>目标开始日期</span><input type="date" required value={taskStart} onChange={event => setTaskStart(event.target.value)} /></label>
+                    <label className="form-field"><span>目标结束日期</span><input type="date" required value={taskEnd} min={taskStart} onChange={event => setTaskEnd(event.target.value)} /></label>
+                  </div>
+                  <label className="form-field"><span>每日 QQ 提醒（可留空）</span><input type="time" value={dailyReminderTime} onChange={event => setDailyReminderTime(event.target.value)} /></label>
+                  <small>每天独立打卡；提醒使用 {dataView.timeZone}，需要连接服务器并绑定机器人。</small>
+                </>}
+                {creationMode === "task" && <>
+                  <label className="setting-check"><input type="checkbox" checked={useReminder} onChange={event => setUseReminder(event.target.checked)} />设置 QQ 提醒</label>
+                  {useReminder && <label className="form-field"><span>提醒时间（{dataView.timeZone}）</span><input type="datetime-local" required value={notifyAt} onChange={event => setNotifyAt(event.target.value)} /></label>}
+                  {useReminder && <small>需连接服务器并绑定 AstrBot；任务会立即显示，而不是等到提醒时间。</small>}
+                </>}
 
                 {creationMode === "notification" && (
                   <label className="form-field">
@@ -2284,6 +2369,12 @@ function App() {
                   </label>
                 </div>
 
+                {!todos.find(todo => todo.id === editingTaskId)?.isGroup && <>
+                  <label className="form-field"><span>一次性 QQ 提醒（留空取消）</span><input type="datetime-local" value={editReminder} onChange={event => setEditReminder(event.target.value)} /></label>
+                  {todos.find(todo => todo.id === editingTaskId)?.goalStartDate && <label className="form-field"><span>每日 QQ 提醒（留空取消）</span><input type="time" value={editDailyReminder} onChange={event => setEditDailyReminder(event.target.value)} /></label>}
+                  <small>时区 {dataView.timeZone}；提醒需要服务器与 QQ 绑定。</small>
+                </>}
+
                 <div className="quick-add-actions">
                   <button className="text-button ghost" onClick={() => setEditingTaskId(null)} type="button">
                     {text.cancel}
@@ -2379,6 +2470,7 @@ function App() {
               </label>
               <label className="setting-check">
                 <input
+                  disabled={!appWindow.native}
                   checked={autoStartEnabled}
                   onChange={toggleAutoStart}
                   type="checkbox"
@@ -2404,6 +2496,7 @@ function App() {
                   value={settings.eyeCareMinutes}
                 />
               </label>
+              <DataSettings store={dataStore} view={dataView} timerActive={!!timingTodoId} />
             </section>
           )}
 
@@ -2524,7 +2617,7 @@ function App() {
 
                       // 计算当天的实际工作时间
                       const timeOnDate = todo.timeEntries
-                        ?.filter((entry) => entry.startTime.slice(0, 10) === diaryDate)
+                        ?.filter((entry) => businessDate(new Date(entry.startTime)) === diaryDate)
                         .reduce((sum, entry) => sum + entry.duration, 0) || 0;
 
                       return (
@@ -2667,7 +2760,7 @@ function App() {
         : todo.startDate
           ? ` / ${todo.startDate.slice(5)}`
           : "";
-    const notifyText = todo.notifyAt ? ` / ${todo.notifyAt.slice(5, 10)} ${todo.notifyAt.slice(11)}` : "";
+    const notifyText = todo.reminderTime ? ` / 每日提醒 ${todo.reminderTime}` : todo.reminderAt ? ` / 提醒 ${dateTimeLocal(new Date(todo.reminderAt)).slice(5).replace("T", " ")}` : todo.notifyAt ? ` / ${todo.notifyAt.slice(5, 10)} ${todo.notifyAt.slice(11)}` : "";
     const kindText = todo.isGroup ? text.taskGroup : childView ? text.childTask : "";
     const showTooltip = hoveredTodoId === todo.id && todo.notes;
     const isRenaming = renamingTodoId === todo.id;
@@ -2682,7 +2775,7 @@ function App() {
           isCompleting ? "completing" : "",
         ].join(" ")}
         key={todo.id}
-        draggable={!completedView && !todo.isGroup && !isDone}
+        draggable={dataStore.canWrite && !completedView && !todo.isGroup && !isDone}
         onDragOver={(event) => (!completedView && todo.isGroup ? allowGroupDrop(event, todo.id) : undefined)}
         onDragStart={(event) => startTodoDrag(event, todo)}
         onDrop={(event) => (!completedView && todo.isGroup ? dropTodoIntoGroup(event, todo.id) : undefined)}
@@ -2693,7 +2786,7 @@ function App() {
         <button
           aria-label={isDone ? text.moveBack : text.markDone}
           className={`check-button ${todo.priority} ${isCompleting ? "bursting" : ""}`}
-          disabled={isCompleting || (!completedView && todo.isGroup && openChildren.length > 0)}
+          disabled={!dataStore.canWrite || isCompleting || (!completedView && todo.isGroup && openChildren.length > 0)}
           onClick={() => completeTodo(todo.id)}
           title={!completedView && todo.isGroup && openChildren.length > 0 ? text.groupHasOpenChildren : undefined}
           type="button"
@@ -2757,7 +2850,7 @@ function App() {
           <button
             aria-label={text.deleteTask}
             className="delete-button"
-            disabled={isCompleting}
+            disabled={!dataStore.canWrite || isCompleting}
             onClick={() => removeTodo(todo.id)}
             type="button"
           >
@@ -2830,7 +2923,7 @@ function getTimeDistribution(todos: Todo[], date: string): TimeDistribution[] {
     const timeOnDate = todo.timeEntries
       .filter((entry) => {
         // 检查时间条目是否在指定日期
-        const entryDate = localDate(new Date(entry.startTime));
+        const entryDate = businessDate(new Date(entry.startTime));
         return entryDate === date;
       })
       .reduce((sum, entry) => sum + entry.duration, 0);

@@ -54,6 +54,7 @@ export const todoSchema = z.object({
   if (!!todo.goalStartDate !== !!todo.goalEndDate) issue('Both goal dates are required');
   if (todo.goalStartDate && todo.goalEndDate && todo.goalStartDate > todo.goalEndDate) issue('Goal range is reversed');
   if (todo.startDate && todo.endDate && todo.startDate > todo.endDate) issue('Task range is reversed');
+  if (todo.reminderTime && todo.reminderAt) issue('Choose either a one-time reminder or a daily reminder');
   if (todo.reminderTime && !todo.goalStartDate) issue('Daily reminder requires a daily goal');
   if (todo.isGroup && (todo.goalStartDate || todo.parentId || todo.reminderAt || todo.reminderTime)) issue('Groups cannot be goals, children, or have reminders');
   if (new Set(todo.completionDates).size !== todo.completionDates.length) issue('Duplicate completion day');
@@ -145,7 +146,7 @@ export function applyOperations(before: BusinessData, operations: Operation[]): 
     const id = 'id' in op ? op.id : op.value.id;
     const index = rows.findIndex(row => row.id === id);
     if ('value' in op) {
-      if (index < 0) rows.unshift(op.value); else rows[index] = op.value;
+      if (index < 0) { if (key === 'todos') rows.unshift(op.value); else rows.push(op.value); } else rows[index] = op.value;
     } else if (index >= 0) rows.splice(index, 1);
   }
   return businessSchema.parse(result);

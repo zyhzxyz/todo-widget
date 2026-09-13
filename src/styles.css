@@ -2131,3 +2131,30 @@ footer {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
+
+/* Remote mode adds one compact status row; business controls stay separate from settings. */
+.widget.with-data-status:not(.collapsed) { grid-template-rows: auto auto auto 1fr auto; }
+.data-status { display: grid; gap: 3px; width: 100%; text-align: left; padding: 7px 9px; border: 1px solid rgba(var(--accent), .28); border-radius: 9px; background: rgba(var(--accent), .07); color: inherit; cursor: pointer; }
+.data-status strong { font-size: 11px; font-weight: 500; }
+.data-status small { font-size: 10px; opacity: .7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.data-status.offline, .data-status.conflict, .data-status.locked { border-color: rgba(255, 191, 105, .45); color: #ffd8a8; }
+.settings-panel { width: min(290px, calc(100% - 28px)); max-height: calc(100% - 64px); overflow-y: auto; overscroll-behavior: contain; }
+.data-settings { display: grid; gap: 10px; border-top: 1px solid rgba(255,255,255,.13); padding-top: 12px; font-size: 12px; }
+.data-settings h3 { font-size: 13px; font-weight: 600; margin: 0; }
+.data-settings p { margin: 0; line-height: 1.6; overflow-wrap: anywhere; }
+.data-settings small { font-size: 10px; line-height: 1.6; opacity: .65; }
+.data-settings label { display: grid; gap: 5px; }
+.data-settings input:not([type=checkbox]) { width: 100%; min-width: 0; padding: 8px; border: 1px solid rgba(255,255,255,.15); border-radius: 7px; background: rgba(0,0,0,.15); color: inherit; font-size: 11px; }
+.data-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.data-settings button { padding: 7px 8px; border: 1px solid rgba(var(--accent), .25); border-radius: 7px; background: rgba(var(--accent), .12); color: inherit; font-size: 11px; cursor: pointer; }
+.data-settings button:hover:not(:disabled) { background: rgba(var(--accent), .22); }
+button:disabled, input:disabled { opacity: .45; cursor: not-allowed; }
+.data-explanation { color: rgba(255,255,255,.65); font-size: 11px; }
+.data-warning { color: #ffd8a8; font-size: 11px; }
+.import-preview, .reminder-status, .timer-recovery { display: grid; gap: 7px; padding: 9px; border: 1px solid rgba(255,255,255,.12); border-radius: 8px; }
+.creation-modal { max-height: calc(100% - 24px); overflow-y: auto; }
+.creation-modal small { color: rgba(255,255,255,.6); font-size: 11px; line-height: 1.6; }
+.browser-timer { display: flex; align-items: center; gap: 8px; flex-basis: 100%; padding: 5px 0; }
+.browser-timer strong { margin-right: auto; font-variant-numeric: tabular-nums; }
+.browser-timer button { border: 0; background: rgba(var(--accent), .18); border-radius: 5px; color: inherit; padding: 4px 6px; font-size: 11px; cursor: pointer; }
+footer:has(.browser-timer) { flex-wrap: wrap; }

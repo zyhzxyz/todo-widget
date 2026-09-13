@@ -65,6 +65,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-09-13T12:00:00+08:00"));
   localStorage.clear();
+  sessionStorage.clear();
   native.listeners.clear();
   native.windows.length = 0;
   native.getByLabel.mockReset().mockResolvedValue(null);
@@ -172,6 +173,7 @@ describe("timer session ownership", () => {
     await advance(5000);
     await timerAction("任务A", "停止计时");
     expect(stored()[0].timeEntries[0]).toEqual({
+      id: expect.any(String),
       startTime: "2026-09-13T04:00:00.000Z", endTime: "2026-09-13T04:00:35.000Z", duration: 15,
     });
   });
@@ -187,5 +189,48 @@ describe("timer session ownership", () => {
     await act(async () => resolveOld(null));
     expect(native.windows).toHaveLength(1);
     expect(stored()[0].totalTimeSpent).toBe(3);
+  });
+});
+
+describe("data protection and daily goal creation", () => {
+  it("protects malformed local business JSON instead of overwriting it with demo tasks", async () => {
+    localStorage.setItem(key, '{broken JSON');
+    render(<App />); await flush();
+    expect(localStorage.getItem(key)).toBe('{broken JSON');
+    expect(screen.getByText('存储异常 · 只读保护')).toBeTruthy();
+  });
+  it("creates a daily goal with independent dates and an optional daily reminder", async () => {
+    seed([]); render(<App />); await flush();
+    const surface = document.querySelector('.todo-list') || document.querySelector('.task-list');
+    expect(surface).toBeTruthy();
+    fireEvent.contextMenu(surface!);
+    fireEvent.click(screen.getByRole('button', { name: '创建每日目标' }));
+    const title = document.querySelector('.creation-modal input:not([type])') as HTMLInputElement;
+    fireEvent.change(title, { target: { value: '每天读书' } });
+    fireEvent.change(screen.getByLabelText('目标开始日期'), { target: { value: '2026-09-13' } });
+    fireEvent.change(screen.getByLabelText('目标结束日期'), { target: { value: '2026-10-13' } });
+    fireEvent.change(screen.getByLabelText('每日 QQ 提醒（可留空）'), { target: { value: '20:30' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存' })); await flush();
+    expect(stored()[0]).toMatchObject({ title: '每天读书', goalStartDate: '2026-09-13', goalEndDate: '2026-10-13', reminderTime: '20:30', completionDates: [] });
+  });
+});
+
+
+describe("damaged values and timer checkpoints", () => {
+  it.each(["null", "", "{}"])("does not seed over an existing invalid task value %s", async raw => {
+    localStorage.setItem(key, raw); render(<App />); await flush();
+    expect(localStorage.getItem(key)).toBe(raw);
+    expect(screen.getByText('存储异常 · 只读保护')).toBeTruthy();
+  });
+  it("checkpoints live timing with the same ID later used on stop", async () => {
+    seed([makeTodo("A")]); render(<App />); await timerAction("任务A", "开始计时");
+    await advance(7000);
+    const checkpoint = JSON.parse(localStorage.getItem('todo-widget.timer-recovery:local')!)[0];
+    expect(checkpoint.entry.duration).toBe(5);
+    expect(stored()[0].timeEntries).toHaveLength(0);
+    await timerAction("任务A", "停止计时");
+    expect(stored()[0].timeEntries[0].id).toBe(checkpoint.entry.id);
+    expect(stored()[0].timeEntries[0].duration).toBe(7);
+    expect(JSON.parse(localStorage.getItem('todo-widget.timer-recovery:local')!)).toEqual([]);
   });
 });
