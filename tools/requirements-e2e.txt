@@ -1,0 +1,2 @@
+# Optional browser E2E only; not a server or AstrBot runtime dependency.
+playwright==1.62.0

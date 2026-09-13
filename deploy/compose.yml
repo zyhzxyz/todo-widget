@@ -1,0 +1,29 @@
+name: todo-widget
+services:
+  todo-api:
+    image: todo-widget-api:local
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    init: true
+    # Matches the existing AstrBot/NapCat host-network installation on Linux.
+    # The API still listens on loopback only. There is no public ports mapping.
+    network_mode: host
+    env_file: ${TODO_ENV_FILE:-.env}
+    environment:
+      TODO_HOST: 127.0.0.1
+      TODO_PORT: '3210'
+      TODO_DB_PATH: /var/lib/todo-widget/todo.db
+    volumes:
+      - todo-data:/var/lib/todo-widget
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 512m
+    stop_grace_period: 60s
+volumes:
+  todo-data:

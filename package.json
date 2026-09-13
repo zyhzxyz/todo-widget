@@ -21,7 +21,9 @@
     "test:server": "vitest run --config server/vitest.config.ts",
     "typecheck:tests": "tsc -p tsconfig.tests.json",
     "test:plugin": "python3 -m unittest discover -s tests/plugin -v",
-    "package:plugin": "python3 tools/package_astrbot.py"
+    "package:plugin": "python3 tools/package_astrbot.py",
+    "test:e2e": "python3 tools/e2e.py",
+    "test:e2e:browser": "python3 tools/e2e.py --browser"
   },
   "dependencies": {
     "@js-temporal/polyfill": "^0.5.1",

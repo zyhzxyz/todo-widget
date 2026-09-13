@@ -16,6 +16,7 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run test:server
+      - run: npm run typecheck
       - run: npm run typecheck:server
       - run: npm run typecheck:tests
       - run: npm run build
@@ -29,6 +30,26 @@ jobs:
           name: astrbot-plugin-todo-widget
           path: artifacts/astrbot_plugin_todo_widget.zip
           if-no-files-found: error
+  end-to-end:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - run: python -m pip install -r tools/requirements-e2e.txt
+      - run: python -m playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - run: docker build -f deploy/Dockerfile -t todo-widget-api:integration-test .
+      # Random test tokens, a separate Compose project/volume and simulated OneBot.
+      # Never needs production secrets or access to a real QQ account.
+      - run: npm run test:e2e -- --docker-image todo-widget-api:integration-test --browser
   windows:
     runs-on: windows-latest
     steps:

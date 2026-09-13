@@ -1,0 +1,13 @@
+# Run Caddy on the host (or in host network), with DNS pointed here and ports 80/443 available.
+# Replace the domain. Do not expose API 3210 to the internet.
+todo.example.com {
+    request_body {
+        max_size 16MB
+    }
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+    }
+    reverse_proxy 127.0.0.1:3210
+    # Do not enable logging of Authorization headers or JSON request bodies.
+}
